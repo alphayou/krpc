@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a bug or JSON-RPC 2.0 spec compliance issue in krpc
+labels:
+  - bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please include a minimal reproduction so we can diagnose and fix it quickly.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what happened vs. what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Paste a self-contained TypeScript snippet or link to a minimal repository that reproduces the issue.
+      render: typescript
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      description: Which JavaScript runtime are you using?
+      options:
+        - Bun
+        - Node.js
+        - Deno
+        - Cloudflare Workers
+        - Browser
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Relevant versions and transport setup.
+      placeholder: |
+        - krpc:
+        - TypeScript:
+        - Runtime version:
+        - Transport: krpc / krpc/http / krpc/ws / krpc/stream / custom
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Validations
+      options:
+        - label: I checked existing issues to make sure this is not a duplicate.
+          required: true
+        - label: I provided a minimal reproduction of the issue.
+          required: true

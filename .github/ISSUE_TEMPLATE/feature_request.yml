@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a new feature, transport improvement, or type-level enhancement
+labels:
+  - enhancement
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `krpc` aims to stay minimal, zero-dependency, strictly compliant with JSON-RPC 2.0, and built purely on Web Standard APIs. Please describe the use case and why it fits these constraints.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve, or what limitation did you hit?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behavior
+      description: Describe the solution you have in mind. TypeScript examples are welcome.
+      render: typescript
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered other approaches or workarounds in userland?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any links, references, or extra context here.

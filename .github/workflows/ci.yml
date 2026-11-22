@@ -54,11 +54,13 @@ jobs:
         run: |
           node --input-type=module -e "
             import assert from 'node:assert/strict'
+            import { PassThrough } from 'node:stream'
             import { defineService, defineMethod, createServer, createClient, createPeer, createMemoryTransport } from './dist/index.mjs'
             import { createHttpHandler, httpTransport } from './dist/http.mjs'
             import { wsTransport, createWsServerTransport, createWsHandler } from './dist/ws.mjs'
             import { createBunHandler } from './dist/bun.mjs'
             import { streamTransport } from './dist/stream.mjs'
+            import { stdioTransport } from './dist/stdio.mjs'
             import { portTransport } from './dist/port.mjs'
 
             const app = defineService(() => ({
@@ -99,6 +101,14 @@ jobs:
             await cStream.close()
             await sStream.close()
 
+            const c2sStdio = new PassThrough()
+            const s2cStdio = new PassThrough()
+            const sStdio = createPeer(stdioTransport({ input: c2sStdio, output: s2cStdio }), app)
+            const cStdio = createPeer(stdioTransport({ input: s2cStdio, output: c2sStdio }))
+            assert.deepEqual(await cStdio.call('add', [11, 12]), { ok: true, value: 23 })
+            await cStdio.close()
+            await sStdio.close()
+
             const { port1, port2 } = new MessageChannel()
             const sPort = createPeer(portTransport(port1), app)
             const cPort = createPeer(portTransport(port2))
@@ -108,4 +118,4 @@ jobs:
           "
 
       - name: Run examples
-        run: bun run examples/http.ts && bun run examples/ws-peer.ts && bun run examples/stream.ts && bun run examples/port.ts
+        run: bun run examples/http.ts && bun run examples/ws-peer.ts && bun run examples/stream.ts && bun run examples/stdio.ts && bun run examples/port.ts

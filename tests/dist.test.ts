@@ -16,6 +16,7 @@ describe('built dist/ ESM artifacts', () => {
   let wsMod: typeof import('../src/ws')
   let bunMod: typeof import('../src/bun')
   let streamMod: typeof import('../src/stream')
+  let stdioMod: typeof import('../src/stdio')
   let portMod: typeof import('../src/port')
 
   beforeAll(async () => {
@@ -25,6 +26,7 @@ describe('built dist/ ESM artifacts', () => {
       'ws.mjs',
       'bun.mjs',
       'stream.mjs',
+      'stdio.mjs',
       'port.mjs',
     ]
     if (required.some((f) => !existsSync(resolve(distDir, f)))) {
@@ -41,6 +43,7 @@ describe('built dist/ ESM artifacts', () => {
     wsMod = await import(distUrl('ws.mjs'))
     bunMod = await import(distUrl('bun.mjs'))
     streamMod = await import(distUrl('stream.mjs'))
+    stdioMod = await import(distUrl('stdio.mjs'))
     portMod = await import(distUrl('port.mjs'))
   })
 
@@ -194,6 +197,41 @@ describe('built dist/ ESM artifacts', () => {
         value: 42,
       })
       expect(await clientPeer.call('noop')).toEqual({ ok: true, value: null })
+
+      await clientPeer.close()
+      await serverPeer.close()
+    }
+  })
+
+  it('runs Peer over stdio streams with ndjson and content-length framing from dist/stdio.mjs', async () => {
+    const app = core.defineService(() => ({
+      add: core.defineMethod(([a, b]: [number, number]) => a + b),
+    }))
+
+    for (const framing of ['ndjson', 'content-length'] as const) {
+      const aToB = new TransformStream<Uint8Array, Uint8Array>()
+      const bToA = new TransformStream<Uint8Array, Uint8Array>()
+
+      const serverPeer = core.createPeer(
+        stdioMod.stdioTransport({
+          input: aToB.readable,
+          output: bToA.writable,
+          framing,
+        }),
+        app
+      )
+      const clientPeer = core.createPeer<typeof app>(
+        stdioMod.stdioTransport({
+          input: bToA.readable,
+          output: aToB.writable,
+          framing,
+        })
+      )
+
+      expect(await clientPeer.call('add', [17, 25])).toEqual({
+        ok: true,
+        value: 42,
+      })
 
       await clientPeer.close()
       await serverPeer.close()

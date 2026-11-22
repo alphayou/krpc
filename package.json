@@ -58,6 +58,10 @@
       "types": "./dist/stream.d.mts",
       "import": "./dist/stream.mjs"
     },
+    "./stdio": {
+      "types": "./dist/stdio.d.mts",
+      "import": "./dist/stdio.mjs"
+    },
     "./port": {
       "types": "./dist/port.d.mts",
       "import": "./dist/port.mjs"

@@ -30,7 +30,7 @@ async function bundleClientOnly(minify: boolean): Promise<string> {
 }
 
 describe('tree-shaking regression', () => {
-  it('eliminates server, service, peer, proxy, ws, stream, and http handler code from a client-only bundle', async () => {
+  it('eliminates server, service, peer, proxy, ws, stream, stdio, and http handler code from a client-only bundle', async () => {
     const unminified = await bundleClientOnly(false)
     const minified = await bundleClientOnly(true)
 
@@ -41,6 +41,7 @@ describe('tree-shaking regression', () => {
       'createProxy',
       'wsTransport',
       'streamTransport',
+      'stdioTransport',
       'createHttpHandler',
       'createMemoryTransport',
       'createMemoryDuplexPair',
@@ -57,6 +58,7 @@ describe('tree-shaking regression', () => {
       'Unsupported Media Type',
       'WebSocket is closed',
       'Content-Length',
+      'Stdio transport is closed',
       'Transport closed',
     ]
 

@@ -10,7 +10,7 @@
   - `noImplicitOverride: true`
   - `noFallthroughCasesInSwitch: true`
 - **Tests**: `bun test` / `bun run test:coverage` (`bunfig.toml` sets `root = "tests"`). Include `@ts-expect-error` negative assertions in `tests/types.test.ts` for type-level constraints.
-- **Bundling**: `tsdown` ESM-only builds with `.d.mts` declarations, sourcemaps, and `treeshake: true` (`dist/`). Subpath entry points: `.` (`krpc`), `./http` (`krpc/http`), `./ws` (`krpc/ws`), `./bun` (`krpc/bun`), `./stream` (`krpc/stream`), and `./port` (`krpc/port`).
+- **Bundling**: `tsdown` ESM-only builds with `.d.mts` declarations, sourcemaps, and `treeshake: true` (`dist/`). Subpath entry points: `.` (`krpc`), `./http` (`krpc/http`), `./ws` (`krpc/ws`), `./bun` (`krpc/bun`), `./stream` (`krpc/stream`), `./stdio` (`krpc/stdio`), and `./port` (`krpc/port`).
 
 ## Formatting & Style
 
@@ -33,7 +33,7 @@
 - Use `trash <path>` instead of `rm` when removing files.
 - Follow Angular / Conventional Commits: `<type>(<scope>): <short summary>`.
   - Types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
-  - Scopes: `protocol`, `service`, `server`, `client`, `peer`, `http`, `ws`, `bun`, `stream`, `port`, `types`, `docs`.
+  - Scopes: `protocol`, `service`, `server`, `client`, `peer`, `http`, `ws`, `bun`, `stream`, `stdio`, `port`, `types`, `docs`.
 
 ## Verification & Publishing Checklist
 

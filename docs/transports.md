@@ -13,7 +13,8 @@
 | `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers   |
 | `krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                             | Duplex          | Real-time apps, server push, bidirectional RPC    |
 | `krpc/bun`    | `createBunHandler`                                                                                                      | HTTP + Duplex   | Unified HTTP + WebSocket `Bun.serve` endpoints    |
-| `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | stdio, pipes, IPC, LSP-style framing              |
+| `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | Web Streams, pipes, IPC, LSP-style framing        |
+| `krpc/stdio`  | `stdioTransport`                                                                                                        | Duplex          | CLI servers (`stdin`/`stdout`), subprocess pipes  |
 | `krpc/port`   | `portTransport`                                                                                                         | Duplex          | `MessageChannel`, Web Workers, `MessagePort` APIs |
 
 ## Memory (`krpc`)
@@ -286,6 +287,55 @@ const peer = createPeer(transport, app)
 - **`content-length`**: LSP-style `Content-Length: <bytes>\r\n\r\n<utf8-json>` framing using exact UTF-8 byte counts (`TextEncoder` / `TextDecoder`). Safely handles fragmented chunks, coalesced frames, and multi-byte UTF-8 characters split across chunks.
 
 Both modes enforce `maxMessageSize` to guard against unbounded buffers. Low-level framing helpers (`encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder`) are also exported from `krpc/stream` for custom byte-stream integrations.
+
+## Stdio & Subprocesses (`krpc/stdio`)
+
+`stdioTransport(options?)` adapts standard I/O or child-process pipes into a framed `DuplexTransport` using pure structural types (zero `node:*` or `bun` runtime imports). It accepts both Web Standard streams (`ReadableStream` / `WritableStream`) and Node / Bun stream handles (`process.stdin`, `process.stdout`, `Bun.spawn` pipes).
+
+### CLI / MCP / LSP Server (`process.stdin` & `process.stdout`)
+
+With no arguments, `stdioTransport()` binds to `process.stdin` and `process.stdout` using `'ndjson'` framing (or pass `{ framing: 'content-length' }` for LSP-style framing):
+
+```ts
+import { createPeer } from 'krpc'
+import { stdioTransport } from 'krpc/stdio'
+import { app } from './app'
+
+// Serves JSON-RPC over stdin/stdout; exits cleanly when stdin reaches EOF
+const peer = createPeer(stdioTransport(), app)
+```
+
+### Parent / Child Subprocess (`Bun.spawn`)
+
+Connect a parent process to a spawned worker over OS pipes:
+
+```ts
+import { createPeer } from 'krpc'
+import { stdioTransport } from 'krpc/stdio'
+import type { App } from './app'
+
+const proc = Bun.spawn([process.execPath, './worker.ts'], {
+  stdin: 'pipe',
+  stdout: 'pipe',
+  stderr: 'inherit',
+})
+
+const peer = createPeer<App>(
+  stdioTransport({
+    input: proc.stdout,
+    output: proc.stdin,
+    framing: 'ndjson', // or 'content-length'
+  })
+)
+
+const res = await peer.call('ping')
+await peer.close() // closes proc.stdin so the child receives EOF and exits cleanly
+await proc.exited
+```
+
+- **Framing**: Supports `'ndjson'` (default) and `'content-length'`, plus `maxMessageSize` (default: 16 MiB), sharing the exact same framing codec as `krpc/stream`.
+- **Backpressure & flushing**: Respects Node `Writable` backpressure (`write() === false` -> `once('drain')`) and calls `flush?.()` for Bun `FileSink` handles automatically.
+- **Clean shutdown (`closeStreams`)**: Defaults to `true` for explicitly provided streams (cancelling readers / ending sinks) and `false` for global `process.stdin` / `process.stdout` (detaching listeners and calling `process.stdin.pause()` so CLI processes exit without hanging).
 
 ## MessagePort & Web Workers (`krpc/port`)
 

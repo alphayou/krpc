@@ -13,7 +13,7 @@ Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Stan
 - **Type-safe & external-server ready**: Automatic `Result` / domain-error splitting, compile-time structured `params` enforcement, variadic `batch` tuples, and recursive `createProxy`—or omit `<App>` to call any external JSON-RPC 2.0 server (Ethereum, LSP, MCP).
 - **Standard Schema v1**: Plug in Zod, Valibot, ArkType, or any [Standard Schema v1](https://standardschema.dev/) validator with zero runtime dependencies.
 - **Result vs. Throw boundary**: Protocol and domain errors always return `{ ok: false, error }`; infrastructure errors throw `KrpcTransportError`, `KrpcTimeoutError`, or `AbortError`.
-- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/bun`, `krpc/stream`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
+- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/bun`, `krpc/stream`, `krpc/stdio`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
 
 ## Install
 
@@ -182,14 +182,15 @@ await peer.close()
 | `krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                |
 | `krpc/bun`    | `createBunHandler` (unified HTTP + WebSocket adapter for `Bun.serve`)                                      |
 | `krpc/stream` | `streamTransport`, `ndjson` and `content-length` framing helpers                                           |
+| `krpc/stdio`  | `stdioTransport` for `process.stdin` / `process.stdout` and subprocess pipes                               |
 | `krpc/port`   | `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`                              |
 
 ## Documentation
 
 - [Guide](./docs/guide.md) — Services, validation, errors, context, hooks, clients, peers, and type utilities
-- [Transports](./docs/transports.md) — Memory, auto-batching (`batchTransport`), HTTP, WebSocket, Web Streams, `MessagePort` / Workers, and custom transports
+- [Transports](./docs/transports.md) — Memory, auto-batching (`batchTransport`), HTTP, WebSocket, Web Streams, stdio, `MessagePort` / Workers, and custom transports
 - [Protocol Reference](./docs/protocol.md) — JSON-RPC 2.0 compliance matrix, error codes, batching, and cancellation
-- [Examples](./examples/) — Runnable end-to-end examples (`http.ts`, `ws-peer.ts`, `stream.ts`, `port.ts`)
+- [Examples](./examples/) — Runnable end-to-end examples (`http.ts`, `ws-peer.ts`, `stream.ts`, `stdio.ts`, `port.ts`)
 - [Contributing](./CONTRIBUTING.md) — Development workflow and conventions
 
 ## License

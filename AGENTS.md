@@ -15,7 +15,7 @@
 ## Core Rules
 
 - **KISS**: Keep code, APIs, tests, and docs minimal, transparent, and readable (antfu-style clarity). Avoid unnecessary abstractions or wrappers.
-- **Zero-dep Web Standard `src/`**: `src/` must have zero runtime dependencies and use only ESNext / Web Standard APIs (no Bun-only or Node-only runtime imports; `krpc/bun` uses pure structural TypeScript types). `tests/` may use `bun:test` and `Bun.serve`.
+- **Zero-dep Web Standard `src/`**: `src/` must have zero runtime dependencies and use only ESNext / Web Standard APIs (no Bun-only or Node-only runtime imports; `krpc/bun` and `krpc/stdio` use pure structural TypeScript types). `tests/` may use `bun:test` and `Bun.serve`.
 - **English only**: Write all code comments, JSDoc, docs, and commits in crisp English.
 - **Safe deletion**: Use `trash` instead of `rm` when deleting files.
 
@@ -30,6 +30,6 @@ Read on demand — do not duplicate these docs here:
   - [docs/guide.md](./docs/guide.md) — API usage guide
   - [docs/transports.md](./docs/transports.md) — built-in and custom transports
   - [docs/protocol.md](./docs/protocol.md) — JSON-RPC 2.0 compliance reference
-  - [examples/](./examples/) — runnable end-to-end examples (HTTP, WebSocket, Web Streams, `MessagePort`)
+  - [examples/](./examples/) — runnable end-to-end examples (HTTP, WebSocket, Web Streams, stdio, `MessagePort`)
   - [bench/](./bench/) — zero-dependency performance benchmarks
   - [CONTRIBUTING.md](./CONTRIBUTING.md) — contributor workflow

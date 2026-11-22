@@ -9,15 +9,16 @@ src/
 ├── ws.ts                 # "krpc/ws" entry point
 ├── bun.ts                # "krpc/bun" entry point (pure structural Bun.serve HTTP + WS adapter)
 ├── stream.ts             # "krpc/stream" entry point
+├── stdio.ts              # "krpc/stdio" entry point (pure structural stdio & subprocess pipe adapter)
 ├── port.ts               # "krpc/port" entry point
 ├── protocol/             # JSON-RPC 2.0 wire types, guards, errors, inline Standard Schema v1
 ├── service/              # defineService, defineMethod, defineNotify, defineContext, on* hooks, type utils
 ├── server/               # createServer (dispatch, hooks, batch limits, ctx.after, connect/notify registry)
 ├── client/               # createClient (call/notify/batch/timeout/abort), createProxy
 ├── peer/                 # createPeer (full-duplex RpcServer + KrpcClient + push notifications)
-└── transports/           # ClientTransport, DuplexTransport, memory, batch, http, ws, bun, stream, port
+└── transports/           # ClientTransport, DuplexTransport, memory, batch, http, ws, bun, stream, stdio, port
 tests/                    # Mirrors src/ plus compile-time tests/types.test.ts and tests/treeshake.test.ts
-examples/                 # Runnable end-to-end examples (HTTP, WebSocket, Streams, MessagePort)
+examples/                 # Runnable end-to-end examples (HTTP, WebSocket, Streams, stdio, MessagePort)
 bench/                    # Zero-dependency micro-benchmarks (`bun run bench`)
 ```
 

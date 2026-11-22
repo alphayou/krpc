@@ -1,0 +1,81 @@
+{
+  "name": "krpc",
+  "version": "0.0.0",
+  "description": "Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Standard APIs",
+  "license": "MPL-2.0",
+  "author": {
+    "name": "Alpha You",
+    "email": "oss@alphayou.io",
+    "url": "https://github.com/alphayou"
+  },
+  "keywords": [
+    "json-rpc",
+    "json-rpc-2",
+    "rpc",
+    "typescript",
+    "type-safe",
+    "standard-schema",
+    "zero-dependency",
+    "web-standards",
+    "http",
+    "websocket",
+    "streams"
+  ],
+  "homepage": "https://github.com/alphayou/krpc#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alphayou/krpc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alphayou/krpc/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
+    "typecheck": "bun check",
+    "format": "prettier --write --ignore-unknown .",
+    "format:check": "prettier --check --ignore-unknown .",
+    "verify": "bun run format:check && bun run typecheck && bun run test",
+    "prepublishOnly": "bun run typecheck && bun run test && bun run build",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*": "prettier --write --ignore-unknown"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.2",
+    "prettier": "^3.10.1",
+    "tsdown": "^0.23.7"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  }
+}

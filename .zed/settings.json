@@ -1,0 +1,31 @@
+{
+  "tab_size": 2,
+  "hard_tabs": false,
+  "format_on_save": "on",
+  "ensure_final_newline_on_save": true,
+  "remove_trailing_whitespace_on_save": true,
+  "prettier": {
+    "allowed": true
+  },
+  "languages": {
+    "TypeScript": {
+      "formatter": "prettier"
+    },
+    "TSX": {
+      "formatter": "prettier"
+    },
+    "JavaScript": {
+      "formatter": "prettier"
+    },
+    "JSON": {
+      "formatter": "prettier"
+    },
+    "JSONC": {
+      "formatter": "prettier"
+    },
+    "Markdown": {
+      "formatter": "prettier",
+      "remove_trailing_whitespace_on_save": false
+    }
+  }
+}

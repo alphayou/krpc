@@ -34,13 +34,15 @@ krpc/
 │   ├── index.ts          # "krpc" entry point
 │   ├── http.ts           # "krpc/http" entry point
 │   ├── ws.ts             # "krpc/ws" entry point
+│   ├── bun.ts            # "krpc/bun" entry point
 │   ├── stream.ts         # "krpc/stream" entry point
+│   ├── port.ts           # "krpc/port" entry point
 │   ├── protocol/         # JSON-RPC 2.0 types, guards, errors, Standard Schema v1
 │   ├── service/          # defineService, defineMethod, defineNotify, defineContext, hooks
 │   ├── server/           # createServer (dispatch, hooks, batching, error sanitization)
 │   ├── client/           # createClient, createProxy
 │   ├── peer/             # createPeer (full-duplex client + server + push notifications)
-│   └── transports/       # memory, http, ws, stream transports
+│   └── transports/       # memory, batch, http, ws, bun, stream, port transports
 ├── tests/                # Unit, integration, and compile-time type tests
 └── docs/                 # User guide, protocol reference, and transport guides
 ```
@@ -101,7 +103,7 @@ Common types:
 - `ci` — GitHub Actions or CI changes
 - `chore` — routine maintenance
 
-Common scopes: `protocol`, `service`, `server`, `client`, `peer`, `http`, `ws`, `stream`, `types`, `docs`.
+Common scopes: `protocol`, `service`, `server`, `client`, `peer`, `http`, `ws`, `bun`, `stream`, `port`, `types`, `docs`.
 
 Examples:
 

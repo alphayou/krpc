@@ -6,6 +6,7 @@ export default defineConfig({
     http: 'src/http.ts',
     ws: 'src/ws.ts',
     stream: 'src/stream.ts',
+    port: 'src/port.ts',
   },
   format: ['esm'],
   dts: true,

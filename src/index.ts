@@ -163,6 +163,8 @@ export {
   type PeerOptions,
 } from './peer/peer'
 
+export { batchTransport, type BatchTransportOptions } from './transports/batch'
+
 export {
   createMemoryDuplexPair,
   createMemoryTransport,

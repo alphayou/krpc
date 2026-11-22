@@ -10,10 +10,10 @@ Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Stan
 
 - **Strict JSON-RPC 2.0**: Spec-compliant Request, Notification, Batch, and standard error semantics—no proprietary wire extensions.
 - **Declarative DSL**: Vue 3 / Pinia-inspired `defineService`, `defineMethod`, `defineNotify`, `defineError`, `defineContext`, and synchronous `onBefore` / `onAfter` / `onError` hooks + `use*` composables.
-- **TypeScript 7 inference**: Automatic `Result` / domain-error splitting from `return` values, compile-time structured `params` enforcement, reserved error-code guards, variadic `batch` tuples, and recursive `createProxy`.
+- **Type-safe & external-server ready**: Automatic `Result` / domain-error splitting, compile-time structured `params` enforcement, variadic `batch` tuples, and recursive `createProxy`—or omit `<App>` to call any external JSON-RPC 2.0 server (Ethereum, LSP, MCP).
 - **Standard Schema v1**: Plug in Zod, Valibot, ArkType, or any [Standard Schema v1](https://standardschema.dev/) validator with zero runtime dependencies.
 - **Result vs. Throw boundary**: Protocol and domain errors always return `{ ok: false, error }`; infrastructure errors throw `KrpcTransportError`, `KrpcTimeoutError`, or `AbortError`.
-- **Pure Web Standard transports**: Tree-shakeable ESM-only subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/stream`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
+- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/stream`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
 
 ## Install
 

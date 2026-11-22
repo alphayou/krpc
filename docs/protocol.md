@@ -4,18 +4,20 @@
 
 ## Spec Compliance Matrix
 
-| Requirement                | JSON-RPC 2.0 Rule                                                      | `krpc` Behavior                                                                             |
-| -------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Protocol version           | Every message MUST include `"jsonrpc": "2.0"`                          | Missing or mismatched values return `-32600` Invalid Request                                |
-| Request `id`               | `string \| number \| null`; numbers SHOULD NOT be fractional           | Accepts `string`, finite `number`, or `null`; rejects `NaN`, `Infinity`, booleans, objects  |
-| Missing `id` vs `id: null` | Missing `id` is a Notification; `id: null` is a Request                | Checked via `"id" in msg`; `id: null` always produces a response                            |
-| `params` structure         | If present, MUST be an object or an array                              | Primitive `params` (`number`, `string`, `boolean`, `null`) return `-32600` Invalid Request  |
-| `rpc.` reserved methods    | Method names starting with `rpc.` are reserved for internal extensions | Rejected by default with `-32601` Method not found                                          |
-| Invalid JSON               | Malformed JSON text MUST yield `-32700` Parse error with `id: null`    | Returns a single `-32700` Parse error response with `id: null`                              |
-| Empty batch `[]`           | MUST return a single `-32600` Invalid Request response                 | Returns `{ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } }` |
-| Mixed invalid batch items  | Invalid items produce `-32600` without blocking valid items            | Each item is validated and dispatched independently                                         |
-| All-Notification batch     | Server MUST NOT return any response                                    | `server.handle()` resolves to `undefined`; HTTP responds with `204 No Content`              |
-| Success vs. Error response | Exactly one of `result` or `error` MUST be present                     | Enforced by wire types and runtime validation                                               |
+| Requirement                 | JSON-RPC 2.0 Rule                                                      | `krpc` Behavior                                                                              |
+| --------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Protocol version            | Every message MUST include `"jsonrpc": "2.0"`                          | Missing or mismatched values return `-32600` Invalid Request                                 |
+| Request `id`                | `string \| number \| null`; numbers SHOULD NOT be fractional           | Accepts `string`, finite `number`, or `null`; rejects `NaN`, `Infinity`, booleans, objects   |
+| Missing `id` vs `id: null`  | Missing `id` is a Notification; `id: null` is a Request                | Checked via `"id" in msg`; `id: null` always produces a response                             |
+| `params` structure          | If present, MUST be an object or an array                              | Primitive `params` (`number`, `string`, `boolean`, `null`) return `-32600` Invalid Request   |
+| `rpc.` reserved methods     | Method names starting with `rpc.` are reserved for internal extensions | Rejected by default with `-32601` Method not found                                           |
+| Invalid JSON                | Malformed JSON text MUST yield `-32700` Parse error with `id: null`    | Returns a single `-32700` Parse error response with `id: null`                               |
+| Empty batch `[]`            | MUST return a single `-32600` Invalid Request response                 | Returns `{ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } }`  |
+| Mixed invalid batch items   | Invalid items produce `-32600` without blocking valid items            | Each item is validated and dispatched independently                                          |
+| All-Notification batch      | Server MUST NOT return any response                                    | `server.handle()` resolves to `undefined`; HTTP responds with `204 No Content`               |
+| Success vs. Error response  | Exactly one of `result` or `error` MUST be present                     | Enforced by wire types and runtime validation                                                |
+| `void` / `undefined` result | Section 5 requires `"result"` on every success response                | `undefined`, `function`, `symbol`, and `toJSON() => undefined` normalize to `"result": null` |
+| Unserializable results      | Server MUST still emit a valid JSON-RPC error response                 | `BigInt`, circular objects, and throwing `toJSON` return `-32603` Internal error             |
 
 ## Error Codes
 
@@ -82,8 +84,8 @@ On duplex transports, declare outbound notifications with `defineNotify<Payload>
 
 1. **`defineError` values and `JsonRpcError` instances** are returned to the client with their `code`, `message`, and optional `data`.
 2. **Standard Schema input validation failures** become `-32602` (`'Invalid params'`) with concise issue details in `data`.
-3. **Output schema validation failures and unexpected thrown errors** are sanitized to `-32603` (`'Internal error'`) so stack traces and internal details are never leaked.
-4. **Custom formatting**: Pass `formatError(err, ctx)` to `createServer` to map custom exceptions to a `JsonRpcError` or `JsonRpcErrorObject`:
+3. **Output schema validation failures, unexpected thrown errors, and unserializable results** (`BigInt`, circular objects, or throwing `toJSON`) are sanitized to `-32603` (`'Internal error'`) so stack traces and internal details are never leaked, and sibling batch items continue unaffected.
+4. **Custom formatting**: Pass `formatError(err, ctx)` to `createServer` to map custom exceptions to a `JsonRpcError` or `JsonRpcErrorObject`. If `formatError` throws or returns unserializable `error.data`, `krpc` falls back safely to `-32603` (`'Internal error'`):
 
 ```ts
 const server = createServer(app, {
@@ -110,6 +112,13 @@ const [divRes, sumRes, logRes] = await client.batch((b) => [
   b.notify('log', { message: 'done' }),
 ])
 ```
+
+## External / Untyped JSON-RPC 2.0 Servers
+
+Because `krpc` uses pure JSON-RPC 2.0 on the wire, `createClient(transport)` and client-only `createPeer(transport)` can omit the `<App>` generic to call any compliant external server:
+
+- Accepts arbitrary string method names with optional structured `JsonRpcParams` (object or array).
+- Resolves to `Result<unknown, JsonRpcErrorObject>`, allowing non-standard server/application error codes (such as Ethereum `4001` or LSP `-32800`) without type casts.
 
 ## Cancellation
 

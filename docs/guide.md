@@ -40,6 +40,8 @@ export type App = typeof app
 
 Per JSON-RPC 2.0, method parameters must be structured (an object or an array) or omitted. Primitive parameters like `number` or `string` are rejected at compile time.
 
+Handlers that return `void` or `undefined` serialize as `"result": null` on the wire (per JSON-RPC 2.0 Section 5) and infer `null` on the client (`Result<null, ...>`).
+
 ## Schema Validation (Standard Schema)
 
 Pass any [Standard Schema v1](https://standardschema.dev/) validator (such as Zod, Valibot, or ArkType) as the first argument to `defineMethod`. `krpc` infers the **input** type on the client and the validated **output** type inside the handler.
@@ -215,12 +217,40 @@ const rpc = createProxy(client)
 const res = await rpc.math.add({ a: 10, b: 2 })
 ```
 
+### Calling External / Untyped Servers
+
+To call a third-party JSON-RPC 2.0 server (such as Ethereum, LSP, or MCP) without a `defineService` schema, omit the `<App>` type parameter on `createClient` (or client-only `createPeer`):
+
+```ts
+import { createClient, createProxy } from 'krpc'
+import { httpTransport } from 'krpc/http'
+
+const client = createClient(httpTransport('https://rpc.example.com'))
+
+// Returns Result<unknown, JsonRpcErrorObject> (supports custom external error codes)
+const res = await client.call('eth_blockNumber')
+if (res.ok) {
+  console.log(res.value)
+} else if (res.error.code === 4001) {
+  console.error('Rejected:', res.error.message)
+}
+
+// Structured params (object or array) are still enforced at compile time
+await client.call('eth_getBalance', ['0x...', 'latest'])
+
+// Works with createProxy as well
+const rpc = createProxy(client)
+await rpc.eth_blockNumber()
+```
+
 ## Result vs. Throw
 
 `krpc` separates RPC-level outcomes from transport failures:
 
 - **Returns `{ ok: false, error }`**: Domain errors from `defineError` and JSON-RPC protocol errors (`-32700` .. `-32603`). Never thrown.
 - **Throws**: Infrastructure errors—`KrpcTransportError` (network/HTTP failures), `KrpcTimeoutError` (timeout exceeded), and `AbortError` (`AbortSignal` aborted).
+
+On the server, unhandled exceptions and non-JSON-serializable handler results (`BigInt`, circular objects, or throwing `toJSON`) are caught, passed to `onError` / `formatError`, and returned as `-32603` (`Internal error`) without breaking sibling batch items or crashing the transport.
 
 ```ts
 import { KrpcTimeoutError, KrpcTransportError } from 'krpc'

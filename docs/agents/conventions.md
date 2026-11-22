@@ -39,6 +39,6 @@
 
 Before handing off or publishing:
 
-1. Run `bun run verify && bun run test:coverage && bun run build`.
-2. Verify `package.json` metadata (`description`, `license: "MPL-2.0"`, `author`, `keywords`, `repository`, `homepage`, `bugs`, `sideEffects: false`, `exports`, `publishConfig.access: "public"`, optional `typescript` peer dep).
-3. Ensure `dist/` contains only expected ESM `.mjs` and `.d.mts` artifacts and zero runtime dependencies in `package.json`.
+1. Run `bun run verify && bun run test:coverage && bun run build && bunx publint --strict`.
+2. Verify `package.json` metadata (`description`, `license: "MPL-2.0"`, `author`, `keywords`, `repository`, `homepage`, `bugs`, `sideEffects: false`, `exports`, `publishConfig.access: "public"`).
+3. Ensure `dist/` contains only expected ESM `.mjs` and `.d.mts` artifacts and zero runtime or peer dependencies in `package.json`.

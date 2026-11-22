@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test'
+import { createPeer } from '../../src/peer/peer'
 import { KrpcTransportError } from '../../src/protocol/errors'
+import { createServer, type ServerConnection } from '../../src/server/server'
+import { defineContext } from '../../src/service/context'
+import { defineMethod, defineNotify } from '../../src/service/method'
+import { defineService } from '../../src/service/service'
 import { isDuplexTransport } from '../../src/transports/types'
 import {
+  createWsHandler,
   createWsServerTransport,
   wsTransport,
   type ServerWebSocketLike,
@@ -390,6 +396,183 @@ describe('wsTransport + createWsServerTransport (Bun.serve e2e)', () => {
       expect(serverClosedCount).toBe(1)
     } finally {
       await server.stop(true)
+    }
+  })
+})
+
+describe('createWsHandler', () => {
+  test('manages lifecycle, id, setupContext, onOpen, onClose, and idempotent close', async () => {
+    const Role = defineContext<string>()
+    const notice = defineNotify<{ text: string }>()
+    const app = defineService(() => ({
+      notice,
+      whoami: defineMethod((_params: void, ctx) => ({
+        id: ctx.clientId,
+        role: ctx.get(Role),
+      })),
+    }))
+    const rpcServer = createServer(app)
+
+    interface MockSocket extends ServerWebSocketLike {
+      readonly role: string
+      readonly userId: string
+      readonly sent: string[]
+      closedCount: number
+    }
+
+    const opened: Array<{ id: string; role: string }> = []
+    const closed: Array<{ id: string; reason: unknown }> = []
+    let latestConn: ServerConnection<typeof app> | undefined
+
+    const handler = createWsHandler<typeof app, MockSocket>(rpcServer, {
+      id: (ws) => ws.userId,
+      setupContext(ctx, ws) {
+        ctx.set(Role, ws.role)
+      },
+      onOpen(conn, ws) {
+        latestConn = conn
+        opened.push({ id: conn.id, role: ws.role })
+      },
+      onClose(conn, _ws, reason) {
+        closed.push({ id: conn.id, reason })
+      },
+    })
+
+    const ws1: MockSocket = {
+      role: 'admin',
+      userId: 'u-1',
+      sent: [],
+      closedCount: 0,
+      send(data) {
+        this.sent.push(data)
+      },
+      close() {
+        this.closedCount++
+      },
+    }
+
+    // Unknown socket calls are safely ignored
+    handler.message(ws1, '{"jsonrpc":"2.0","id":0,"method":"whoami"}')
+    handler.close(ws1, 1000, 'unknown')
+    expect(ws1.sent).toEqual([])
+    expect(closed).toEqual([])
+
+    handler.open(ws1)
+    expect(opened).toEqual([{ id: 'u-1', role: 'admin' }])
+
+    handler.message(
+      ws1,
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'whoami' })
+    )
+    await Bun.sleep(10)
+    expect(ws1.sent).toEqual([
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        result: { id: 'u-1', role: 'admin' },
+      }),
+    ])
+
+    expect(await rpcServer.notify('u-1', 'notice', { text: 'hello' })).toBe(
+      true
+    )
+    expect(await latestConn!.notify(notice, { text: 'direct' })).toBe(true)
+    expect(ws1.sent).toHaveLength(3)
+
+    // Peer-initiated close fires onClose once with code/reason and unregisters from server
+    handler.close(ws1, 1000, 'bye')
+    handler.close(ws1, 1000, 'duplicate')
+    expect(closed).toEqual([
+      { id: 'u-1', reason: { code: 1000, reason: 'bye' } },
+    ])
+    expect(
+      await rpcServer.notify('u-1', 'notice', { text: 'after-close' })
+    ).toBe(false)
+
+    // Server-initiated conn.close() also triggers onClose once even if handler.close runs later
+    const ws2: MockSocket = {
+      role: 'guest',
+      userId: 'u-2',
+      sent: [],
+      closedCount: 0,
+      send(data) {
+        this.sent.push(data)
+      },
+      close() {
+        this.closedCount++
+      },
+    }
+    handler.open(ws2)
+    await latestConn!.close()
+    handler.close(ws2, 1000, '')
+    expect(ws2.closedCount).toBe(1)
+    expect(closed).toEqual([
+      { id: 'u-1', reason: { code: 1000, reason: 'bye' } },
+      { id: 'u-2', reason: undefined },
+    ])
+  })
+
+  test('works directly as Bun.serve({ websocket }) handler', async () => {
+    const pingEvent = defineNotify<{ from: string }>()
+    const app = defineService(() => ({
+      pingEvent,
+      info: defineMethod((_params: void, ctx) => ({ clientId: ctx.clientId })),
+    }))
+    const rpcServer = createServer(app)
+
+    let closedEvent: { id: string; reason: unknown } | undefined
+    let onCloseResolve!: () => void
+    const closeDone = new Promise<void>((resolve) => {
+      onCloseResolve = resolve
+    })
+
+    const bunServer = Bun.serve<{ clientId?: string }>({
+      port: 0,
+      fetch(req, srv) {
+        const clientId = new URL(req.url).searchParams.get('id') ?? undefined
+        if (srv.upgrade(req, { data: { clientId } })) {
+          return undefined
+        }
+        return new Response('Upgrade required', { status: 426 })
+      },
+      websocket: createWsHandler(rpcServer, {
+        id: (ws) => ws.data?.clientId,
+        onClose(conn, _ws, reason) {
+          closedEvent = { id: conn.id, reason }
+          onCloseResolve()
+        },
+      }),
+    })
+
+    try {
+      const peer = createPeer<typeof app>(
+        wsTransport(new WebSocket(`ws://127.0.0.1:${bunServer.port}?id=ws-42`))
+      )
+
+      const received: Array<{ from: string }> = []
+      const pushed = new Promise<void>((resolve) => {
+        peer.on('pingEvent', (payload) => {
+          received.push(payload)
+          resolve()
+        })
+      })
+
+      expect(await peer.call('info')).toEqual({
+        ok: true,
+        value: { clientId: 'ws-42' },
+      })
+      expect(
+        await rpcServer.notify('ws-42', 'pingEvent', { from: 'server' })
+      ).toBe(true)
+      await pushed
+      expect(received).toEqual([{ from: 'server' }])
+
+      await peer.close()
+      await closeDone
+      expect(closedEvent?.id).toBe('ws-42')
+      expect(closedEvent?.reason).toBeDefined()
+    } finally {
+      await bunServer.stop(true)
     }
   })
 })

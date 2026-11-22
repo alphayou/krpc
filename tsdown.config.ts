@@ -5,6 +5,7 @@ export default defineConfig({
     index: 'src/index.ts',
     http: 'src/http.ts',
     ws: 'src/ws.ts',
+    bun: 'src/bun.ts',
     stream: 'src/stream.ts',
     port: 'src/port.ts',
   },

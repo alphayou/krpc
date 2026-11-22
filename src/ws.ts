@@ -1,14 +1,17 @@
 /**
- * WebSocket duplex transport (`wsTransport` and `createWsServerTransport`) for `krpc`.
+ * WebSocket duplex transport (`wsTransport`, `createWsServerTransport`, and `createWsHandler`) for `krpc`.
  *
  * @module krpc/ws
  */
 
 export {
+  createWsHandler,
   createWsServerTransport,
   wsTransport,
   type ServerWebSocketLike,
   type WebSocketLike,
+  type WsHandler,
+  type WsHandlerOptions,
   type WsMessageData,
   type WsServerTransportBridge,
 } from './transports/ws'

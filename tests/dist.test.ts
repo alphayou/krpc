@@ -14,6 +14,7 @@ describe('built dist/ ESM artifacts', () => {
   let core: typeof import('../src/index')
   let httpMod: typeof import('../src/http')
   let wsMod: typeof import('../src/ws')
+  let bunMod: typeof import('../src/bun')
   let streamMod: typeof import('../src/stream')
   let portMod: typeof import('../src/port')
 
@@ -22,6 +23,7 @@ describe('built dist/ ESM artifacts', () => {
       'index.mjs',
       'http.mjs',
       'ws.mjs',
+      'bun.mjs',
       'stream.mjs',
       'port.mjs',
     ]
@@ -37,6 +39,7 @@ describe('built dist/ ESM artifacts', () => {
     core = await import(distUrl('index.mjs'))
     httpMod = await import(distUrl('http.mjs'))
     wsMod = await import(distUrl('ws.mjs'))
+    bunMod = await import(distUrl('bun.mjs'))
     streamMod = await import(distUrl('stream.mjs'))
     portMod = await import(distUrl('port.mjs'))
   })
@@ -107,9 +110,11 @@ describe('built dist/ ESM artifacts', () => {
     expect(await client.call('noop')).toEqual({ ok: true, value: null })
   })
 
-  it('runs Peer over MessageChannel via dist/port.mjs and exposes dist/ws.mjs', async () => {
+  it('runs Peer over MessageChannel via dist/port.mjs and exposes dist/ws.mjs and dist/bun.mjs', async () => {
     expect(typeof wsMod.wsTransport).toBe('function')
     expect(typeof wsMod.createWsServerTransport).toBe('function')
+    expect(typeof wsMod.createWsHandler).toBe('function')
+    expect(typeof bunMod.createBunHandler).toBe('function')
 
     const progress = core.defineNotify<{ step: number }>()
     const app = core.defineService(() => ({
@@ -119,6 +124,28 @@ describe('built dist/ ESM artifacts', () => {
         return 'done'
       }),
     }))
+
+    const bunRpc = bunMod.createBunHandler(core.createServer(app), {
+      path: '/rpc',
+    })
+    const notFound = await bunRpc.fetch(
+      new Request('http://localhost/other', { method: 'POST' }),
+      { upgrade: () => false }
+    )
+    expect(notFound?.status).toBe(404)
+    const okRes = await bunRpc.fetch(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'run' }),
+      }),
+      { upgrade: () => false }
+    )
+    expect(await okRes?.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: 'done',
+    })
 
     const { port1, port2 } = new MessageChannel()
     const serverPeer = core.createPeer(portMod.portTransport(port1), app)

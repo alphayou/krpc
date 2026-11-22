@@ -56,7 +56,8 @@ jobs:
             import assert from 'node:assert/strict'
             import { defineService, defineMethod, createServer, createClient, createPeer, createMemoryTransport } from './dist/index.mjs'
             import { createHttpHandler, httpTransport } from './dist/http.mjs'
-            import { wsTransport, createWsServerTransport } from './dist/ws.mjs'
+            import { wsTransport, createWsServerTransport, createWsHandler } from './dist/ws.mjs'
+            import { createBunHandler } from './dist/bun.mjs'
             import { streamTransport } from './dist/stream.mjs'
             import { portTransport } from './dist/port.mjs'
 
@@ -76,6 +77,19 @@ jobs:
 
             assert.equal(typeof wsTransport, 'function')
             assert.equal(typeof createWsServerTransport, 'function')
+            assert.equal(typeof createWsHandler, 'function')
+            assert.equal(typeof createBunHandler, 'function')
+
+            const bunHandler = createBunHandler(server)
+            const bunRes = await bunHandler.fetch(
+              new Request('http://localhost/rpc', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'add', params: [7, 8] }),
+              }),
+              { upgrade: () => false }
+            )
+            assert.deepEqual(await bunRes.json(), { jsonrpc: '2.0', id: 1, result: 15 })
 
             const c2s = new TransformStream()
             const s2c = new TransformStream()

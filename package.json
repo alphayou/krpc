@@ -50,6 +50,10 @@
       "types": "./dist/ws.d.mts",
       "import": "./dist/ws.mjs"
     },
+    "./bun": {
+      "types": "./dist/bun.d.mts",
+      "import": "./dist/bun.mjs"
+    },
     "./stream": {
       "types": "./dist/stream.d.mts",
       "import": "./dist/stream.mjs"

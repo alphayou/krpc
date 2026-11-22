@@ -1,0 +1,262 @@
+import { describe, expect, it } from 'bun:test'
+import { createClient } from '../src/client/client'
+import { createProxy } from '../src/client/proxy'
+import { createPeer } from '../src/peer/peer'
+import { defineError } from '../src/protocol/errors'
+import type { StandardSchemaV1 } from '../src/protocol/standard-schema'
+import type { Result, StandardRpcError } from '../src/protocol/types'
+import { createRpcContext, defineContext } from '../src/service/context'
+import { defineMethod, defineNotify } from '../src/service/method'
+import { defineService } from '../src/service/service'
+import type {
+  InferError,
+  InferInput,
+  InferNotify,
+  InferOutput,
+  MethodNames,
+  NotifyNames,
+} from '../src/service/types'
+import type { ClientTransport, DuplexTransport } from '../src/transports/types'
+
+type Equal<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+    ? true
+    : false
+
+function assertType<T extends true>(_check?: T): void {}
+
+const Unauthorized = defineError(-32001, 'Unauthorized')
+const DivByZero = defineError(-32002, 'Division by zero')
+const Overflow = defineError(-32003, 'Overflow').data<{ max: number }>()
+const Quota = defineError(-32004, 'Quota exceeded').data<{ limit: number }>()
+
+const divideSchema: StandardSchemaV1<
+  { a: number; b?: number },
+  { a: number; b: number }
+> = {
+  '~standard': {
+    version: 1,
+    vendor: 'test',
+    validate: (v) => ({ value: v as { a: number; b: number } }),
+  },
+}
+
+const numberSchema: StandardSchemaV1<number, number> = {
+  '~standard': {
+    version: 1,
+    vendor: 'test',
+    validate: (v) => ({ value: v as number }),
+  },
+}
+
+const math = defineService(() => {
+  const divide = defineMethod(divideSchema, ({ a, b }) => {
+    const _bIsRequired: number = b
+    void _bIsRequired
+    if (b === 0) return DivByZero()
+    if (a > 1e9) return Overflow({ max: 1e9 })
+    if (a < -1e9) return Quota({ limit: 1e9 })
+    return a / b
+  })
+  const sum = defineMethod(([a, b]: [number, number]) => a + b)
+  return { divide, sum }
+})
+
+const job = defineService(() => {
+  const progress = defineNotify<{ jobId: string; percent: number }>()
+  const heartbeat = defineNotify()
+  const start = defineMethod(async ({ jobId }: { jobId: string }, ctx) => {
+    await ctx.notify(progress, { jobId, percent: 50 })
+    await ctx.notify(heartbeat)
+    return { started: true as const }
+  })
+  return { progress, heartbeat, start }
+})
+
+const app = defineService(() => {
+  const ping = defineMethod(() => 'pong' as const)
+  const opt = defineMethod((p?: { tag?: string }) => p?.tag ?? 'none')
+  const log = defineMethod(({ message }: { message: string }) => {
+    void message
+  })
+  return { ping, opt, log, math, job }
+})
+
+type App = typeof app
+
+describe('TypeScript 7 compile-time type gymnastics', () => {
+  it('passes all positive and negative (@ts-expect-error) type assertions', () => {
+    // 1. Flattened method & notify names
+    assertType<
+      Equal<
+        MethodNames<App>,
+        'ping' | 'opt' | 'log' | 'math.divide' | 'math.sum' | 'job.start'
+      >
+    >(true)
+    assertType<Equal<NotifyNames<App>, 'job.progress' | 'job.heartbeat'>>(true)
+
+    // 2. Standard Schema Input vs Output separation
+    assertType<
+      Equal<InferInput<App, 'math.divide'>, { a: number; b?: number }>
+    >(true)
+    assertType<Equal<InferOutput<App, 'math.divide'>, number>>(true)
+    assertType<Equal<InferOutput<App, 'ping'>, 'pong'>>(true)
+    assertType<
+      Equal<
+        InferNotify<App, 'job.progress'>,
+        { jobId: string; percent: number }
+      >
+    >(true)
+
+    // 3. defineError literal codes & discriminated union narrowing
+    assertType<Equal<typeof Unauthorized.code, -32001>>(true)
+    assertType<Equal<typeof Overflow.code, -32003>>(true)
+    assertType<Equal<typeof Quota.code, -32004>>(true)
+
+    type DivideErr = InferError<App, 'math.divide'>
+    const checkNarrowing = (err: DivideErr) => {
+      if (err.code === -32003) {
+        assertType<Equal<typeof err.data, { max: number }>>(true)
+      }
+      if (err.code === -32004) {
+        assertType<Equal<typeof err.data, { limit: number }>>(true)
+      }
+      if (Overflow.is(err)) {
+        assertType<Equal<typeof err.data, { max: number }>>(true)
+      }
+    }
+    void checkNarrowing
+
+    // 4. defineContext required vs defaulted
+    const ReqCtx = defineContext<Headers>()
+    const DefCtx = defineContext('en-US')
+    const checkContext = () => {
+      const ctx = createRpcContext({
+        method: 'ping',
+        id: 1,
+        isNotification: false,
+      })
+      const h = ctx.get(ReqCtx)
+      const hReq = ctx.require(ReqCtx)
+      const locale = ctx.get(DefCtx)
+      assertType<Equal<typeof h, Headers | undefined>>(true)
+      assertType<Equal<typeof hReq, Headers>>(true)
+      assertType<Equal<typeof locale, string>>(true)
+    }
+    void checkContext
+
+    // 5. Client call, notify, batch variadic tuples, and createProxy
+    const checkClientAndProxy = async (transport: ClientTransport) => {
+      const client = createClient<App>(transport)
+
+      const pong = await client.call('ping')
+      assertType<Equal<typeof pong, Result<'pong', StandardRpcError>>>(true)
+
+      const div = await client.call('math.divide', { a: 10 })
+      if (div.ok) {
+        assertType<Equal<typeof div.value, number>>(true)
+      } else if (div.error.code === -32003) {
+        assertType<Equal<typeof div.error.data, { max: number }>>(true)
+      }
+
+      await client.call('opt')
+      await client.call('opt', { tag: 'x' })
+      await client.call('ping', undefined, { timeout: 1000 })
+      await client.notify('log', { message: 'hi' })
+      await client.notify('ping')
+
+      // Variadic batch tuple without `as const`
+      const [r0, r1, r2, r3] = await client.batch((b) => [
+        b.call('math.divide', { a: 10, b: 2 }),
+        b.call('math.sum', [1, 2]),
+        b.notify('log', { message: 'done' }),
+        b.call('ping'),
+      ])
+      assertType<Equal<typeof r0, Result<number, DivideErr>>>(true)
+      assertType<Equal<typeof r1, Result<number, StandardRpcError>>>(true)
+      assertType<Equal<typeof r2, undefined>>(true)
+      assertType<Equal<typeof r3, Result<'pong', StandardRpcError>>>(true)
+
+      // Proxy deep paths
+      const rpc = createProxy(client)
+      const pPing = await rpc.ping()
+      const pDiv = await rpc.math.divide({ a: 10, b: 2 })
+      const pSum = await rpc.math.sum([1, 2])
+      assertType<Equal<typeof pPing, Result<'pong', StandardRpcError>>>(true)
+      assertType<Equal<typeof pDiv, Result<number, DivideErr>>>(true)
+      assertType<Equal<typeof pSum, Result<number, StandardRpcError>>>(true)
+
+      // Negative client & proxy assertions
+      // @ts-expect-error unknown method name
+      await client.call('does.not.exist')
+      // @ts-expect-error void method does not accept params object
+      await client.call('ping', { extra: 1 })
+      // @ts-expect-error required params cannot be omitted
+      await client.call('math.sum')
+      // @ts-expect-error tuple params require [number, number]
+      await client.call('math.sum', [1, 'two'])
+      // @ts-expect-error defineNotify is excluded from client.call
+      await client.call('job.progress', { jobId: '1', percent: 10 })
+      // @ts-expect-error defineNotify is excluded from RpcProxy
+      rpc.job.progress
+    }
+    void checkClientAndProxy
+
+    // 6. Full-duplex Peer typing
+    const checkPeer = async (transport: DuplexTransport) => {
+      const serverPeer = createPeer(transport, app)
+      await serverPeer.notify('job.progress', { jobId: '1', percent: 50 })
+      await serverPeer.notify('job.heartbeat')
+      await serverPeer.notify(job.progress, { jobId: '1', percent: 80 })
+
+      const clientPeer = createPeer<App>(transport)
+      clientPeer.on('job.progress', ({ jobId, percent }) => {
+        assertType<Equal<typeof jobId, string>>(true)
+        assertType<Equal<typeof percent, number>>(true)
+      })
+      clientPeer.on('job.heartbeat', () => {})
+      await clientPeer.call('job.start', { jobId: '1' })
+      await clientPeer.notify('log', { message: 'hello' })
+
+      // @ts-expect-error invalid notification payload shape
+      await serverPeer.notify('job.progress', { jobId: 123, percent: 50 })
+      // @ts-expect-error cannot subscribe to RPC method via peer.on
+      clientPeer.on('ping', () => {})
+    }
+    void checkPeer
+
+    // 7. Compile-time reserved error codes & primitive params rejection
+    const checkInvalidDefinitions = () => {
+      // @ts-expect-error -32700 reserved
+      defineError(-32700, 'Parse error')
+      // @ts-expect-error -32600 reserved
+      defineError(-32600, 'Invalid Request')
+      // @ts-expect-error -32601 reserved
+      defineError(-32601, 'Method not found')
+      // @ts-expect-error -32602 reserved
+      defineError(-32602, 'Invalid params')
+      // @ts-expect-error -32603 reserved
+      defineError(-32603, 'Internal error')
+      // @ts-expect-error reserved code before .data<T>()
+      defineError(-32600, 'Invalid').data<{ x: number }>()
+
+      // @ts-expect-error primitive number param rejected
+      defineMethod((n: number) => n)
+      // @ts-expect-error primitive string param rejected
+      defineMethod((s: string) => s)
+      // @ts-expect-error primitive boolean param rejected
+      defineMethod((b: boolean) => b)
+      // @ts-expect-error null param rejected
+      defineMethod((x: null) => x)
+      // @ts-expect-error primitive Standard Schema input rejected
+      defineMethod(numberSchema, (n) => n)
+      // @ts-expect-error primitive defineNotify rejected
+      defineNotify<string>()
+      // @ts-expect-error primitive defineNotify schema rejected
+      defineNotify(numberSchema)
+    }
+    void checkInvalidDefinitions
+
+    expect(true).toBe(true)
+  })
+})

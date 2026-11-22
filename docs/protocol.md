@@ -62,12 +62,13 @@ Inside a `defineMethod` handler, check `ctx.isNotification` to detect Notificati
 - Errors thrown or returned during a Notification are passed to `onError` hooks instead of sent over the wire.
 - `server.handle()` awaits Notification handlers before resolving so serverless runtimes and tests do not cut off async work early.
 
-### Outbound Push Notifications
+### Outbound Push Notifications & Early Reply
 
-On duplex transports, declare outbound notifications with `defineNotify<Payload>()`:
+Declare outbound notifications with `defineNotify<Payload>()`:
 
-- Inside a handler: `await ctx.notify(progress, { jobId, percent: 50 })` (check `ctx.canNotify` if a service also runs over HTTP).
-- Outside a handler: `await serverPeer.notify("job.progress", { jobId: "1", percent: 80 })`.
+- Inside a handler: `await ctx.notify(progress, { jobId, percent: 50 })` (or targeted `await ctx.notify(progress, payload, targetId)`). Validates registration and Standard Schema first, delivers to active duplex connections, and silently returns `false` on HTTP, closed transports, or offline targets (never throws transport errors). Check `ctx.canNotify` when branching on duplex capability.
+- Early reply: `ctx.after(fn)` runs post-response work without blocking the RPC reply. On duplex transports (`server.connect` / `createPeer`), `ctx.after` tasks flush strictly after the serialized response frame is sent so clients always receive the response before post-reply notifications. Errors inside `ctx.after` are caught and routed to `onError` hooks.
+- Outside a handler: `await server.notify("user-1", "job.progress", { jobId: "1", percent: 80 })` (or `await serverPeer.notify(...)`).
 - On the client peer: `const off = clientPeer.on("job.progress", (data) => { ... })`.
 
 ## Result vs. Throw Boundary

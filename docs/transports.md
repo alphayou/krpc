@@ -11,7 +11,8 @@
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------------- |
 | `krpc`        | `createMemoryTransport`, `createMemoryDuplexPair`, `batchTransport`, `isDuplexTransport`                                | Client & Duplex | Unit tests, SSR, in-process calls, auto-batching  |
 | `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers   |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                                                | Duplex          | Real-time apps, server push, bidirectional RPC    |
+| `krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                             | Duplex          | Real-time apps, server push, bidirectional RPC    |
+| `krpc/bun`    | `createBunHandler`                                                                                                      | HTTP + Duplex   | Unified HTTP + WebSocket `Bun.serve` endpoints    |
 | `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | stdio, pipes, IPC, LSP-style framing              |
 | `krpc/port`   | `portTransport`                                                                                                         | Duplex          | `MessageChannel`, Web Workers, `MessagePort` APIs |
 
@@ -132,6 +133,7 @@ Bun.serve({
 - **`maxBodySize`**: Measured incrementally on the incoming byte stream (and fast-rejected if `Content-Length` already exceeds the limit) so oversized bodies are cancelled immediately.
 - **Cancellation**: `req.signal` is automatically forwarded to `ctx.signal`.
 - **Context**: `setupContext(ctx, req)` runs before `onBefore` hooks to attach headers, cookies, or request metadata.
+- **Background tasks (`waitUntil`)**: Pass `waitUntil` (e.g. Cloudflare Workers `executionCtx.waitUntil`) to keep `ctx.after(...)` tasks alive after the `Response` is returned.
 
 ## WebSocket (`krpc/ws`)
 
@@ -159,9 +161,37 @@ off()
 - When the socket closes, all pending in-flight requests are automatically rejected with `KrpcTransportError`.
 - Reconnection policy (backoff, auth re-handshake, resubscription) is left to application code.
 
-### Server Bridge: `createWsServerTransport(ws)`
+### Server Handler: `createWsHandler(server, options?)`
 
-Adapts server-side WebSocket APIs such as `Bun.serve`'s `ServerWebSocket` (where `message` and `close` callbacks live on the server handler). It returns a `WsServerTransportBridge` (`{ transport, handleMessage, handleClose }`):
+Wires a centralized-callback WebSocket server directly to an `RpcServer` via `server.connect`—managing the `WeakMap`, connection registration, `setupContext`, and `onOpen`/`onClose` lifecycle automatically:
+
+```ts
+import { createServer } from 'krpc'
+import { createWsHandler } from 'krpc/ws'
+
+const rpcServer = createServer(app)
+
+Bun.serve<{ clientId?: string }>({
+  fetch(req, server) {
+    const clientId = new URL(req.url).searchParams.get('id') ?? undefined
+    if (server.upgrade(req, { data: { clientId } })) return
+    return new Response('Upgrade required', { status: 426 })
+  },
+  websocket: createWsHandler(rpcServer, {
+    id: (ws) => ws.data?.clientId,
+    onOpen(conn) {
+      console.log('connected:', conn.id)
+    },
+    onClose(conn) {
+      console.log('disconnected:', conn.id)
+    },
+  }),
+})
+```
+
+### Low-Level Bridge: `createWsServerTransport(ws)`
+
+When you need custom per-socket `createPeer` wiring (for example, server-to-client RPC calls), use `createWsServerTransport(ws)`, which returns `{ transport, handleMessage, handleClose }`:
 
 ```ts
 import { createPeer } from 'krpc'
@@ -190,6 +220,47 @@ Bun.serve({
   },
 })
 ```
+
+## Unified Bun Server (`krpc/bun`)
+
+`createBunHandler(server, options?)` combines `createHttpHandler` and `createWsHandler` into a single `{ fetch, websocket }` object backed by one `RpcServer`. It uses pure structural TypeScript types with zero Bun-only runtime imports.
+
+```ts
+import { createServer } from 'krpc'
+import { createBunHandler } from 'krpc/bun'
+
+const server = createServer(app)
+
+// 1. Direct default export (Bun auto-starts the server)
+export default createBunHandler(server, {
+  path: '/rpc',
+  id: (req) => new URL(req.url).searchParams.get('clientId') ?? undefined,
+  setupContext(ctx, req) {
+    ctx.set(Headers, req.headers)
+  },
+})
+
+// 2. Explicit Bun.serve spread
+Bun.serve({
+  port: 3000,
+  ...createBunHandler(server, { path: '/rpc' }),
+})
+
+// 3. Custom fetch composition
+const rpc = createBunHandler(server)
+Bun.serve({
+  port: 3000,
+  fetch(req, srv) {
+    if (new URL(req.url).pathname === '/health') return new Response('ok')
+    return rpc.fetch(req, srv)
+  },
+  websocket: rpc.websocket,
+})
+```
+
+- `GET` requests with `Upgrade: websocket` upgrade automatically and attach `{ id, req }` so `setupContext(ctx, req)`, `onOpen(conn, req)`, and `onClose(conn, req, reason)` share the exact same `Request` abstraction as HTTP.
+- All other matching requests delegate to `createHttpHandler` (supporting `maxBodySize` and `waitUntil`).
+- HTTP handlers can push targeted notifications directly to connected WebSocket clients via `ctx.notify(def, payload, targetId)` or `server.notify(targetId, ...)`.
 
 ## Web Streams (`krpc/stream`)
 

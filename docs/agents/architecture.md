@@ -7,14 +7,15 @@ src/
 ├── index.ts              # "krpc" entry point (core DSL, client/server/peer, memory & batchTransport)
 ├── http.ts               # "krpc/http" entry point
 ├── ws.ts                 # "krpc/ws" entry point
+├── bun.ts                # "krpc/bun" entry point (pure structural Bun.serve HTTP + WS adapter)
 ├── stream.ts             # "krpc/stream" entry point
 ├── port.ts               # "krpc/port" entry point
 ├── protocol/             # JSON-RPC 2.0 wire types, guards, errors, inline Standard Schema v1
 ├── service/              # defineService, defineMethod, defineNotify, defineContext, on* hooks, type utils
-├── server/               # createServer (dispatch, hooks, batch concurrency/limits, error sanitization)
+├── server/               # createServer (dispatch, hooks, batch limits, ctx.after, connect/notify registry)
 ├── client/               # createClient (call/notify/batch/timeout/abort), createProxy
 ├── peer/                 # createPeer (full-duplex RpcServer + KrpcClient + push notifications)
-└── transports/           # ClientTransport, DuplexTransport, memory, batch, http, ws, stream, port
+└── transports/           # ClientTransport, DuplexTransport, memory, batch, http, ws, bun, stream, port
 tests/                    # Mirrors src/ plus compile-time tests/types.test.ts and tests/treeshake.test.ts
 examples/                 # Runnable end-to-end examples (HTTP, WebSocket, Streams, MessagePort)
 bench/                    # Zero-dependency micro-benchmarks (`bun run bench`)
@@ -33,7 +34,7 @@ bench/                    # Zero-dependency micro-benchmarks (`bun run bench`)
 - `define*`: `defineService`, `defineMethod`, `defineNotify`, `defineError`, `defineContext`.
 - `on*`: `onBefore`, `onAfter`, `onError` — captured synchronously during `defineService(() => ...)` execution (never use `AsyncLocalStorage`; throw if called outside `defineService`).
 - `use*`: User-defined composables grouping `on*` hooks.
-- `create*`: `createServer`, `createClient`, `createProxy`, `createPeer`.
+- `create*`: `createServer`, `createClient`, `createProxy`, `createPeer`, `createHttpHandler`, `createWsHandler`, `createBunHandler`.
 
 ### Service Compilation
 

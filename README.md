@@ -13,7 +13,7 @@ Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Stan
 - **Type-safe & external-server ready**: Automatic `Result` / domain-error splitting, compile-time structured `params` enforcement, variadic `batch` tuples, and recursive `createProxy`—or omit `<App>` to call any external JSON-RPC 2.0 server (Ethereum, LSP, MCP).
 - **Standard Schema v1**: Plug in Zod, Valibot, ArkType, or any [Standard Schema v1](https://standardschema.dev/) validator with zero runtime dependencies.
 - **Result vs. Throw boundary**: Protocol and domain errors always return `{ ok: false, error }`; infrastructure errors throw `KrpcTransportError`, `KrpcTimeoutError`, or `AbortError`.
-- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/stream`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
+- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/bun`, `krpc/stream`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
 
 ## Install
 
@@ -71,10 +71,12 @@ const job = defineService(() => {
 
   const progress = defineNotify<{ jobId: string; percent: number }>()
 
-  const start = defineMethod(async ({ jobId }: { jobId: string }, ctx) => {
+  const start = defineMethod(({ jobId }: { jobId: string }, ctx) => {
     const user = ctx.require(CurrentUser)
-    await ctx.notify(progress, { jobId, percent: 50 })
-    await ctx.notify(progress, { jobId, percent: 100 })
+    ctx.after(async () => {
+      await ctx.notify(progress, { jobId, percent: 50 })
+      await ctx.notify(progress, { jobId, percent: 100 })
+    })
     return { startedBy: user.id }
   })
 
@@ -93,28 +95,25 @@ export const app = defineService(() => {
 export type App = typeof app
 ```
 
-### 2. Serve over HTTP (`krpc/http`)
+### 2. Serve over HTTP & WebSocket (`krpc/http` or `krpc/bun`)
 
 ```ts
 import { createServer } from 'krpc'
-import { createHttpHandler } from 'krpc/http'
+import { createBunHandler } from 'krpc/bun'
 import { app, Headers } from './app'
 
 const server = createServer(app, { maxBatchSize: 50, batchConcurrency: 10 })
-const rpcHandler = createHttpHandler(server, {
+
+// Serves HTTP POST and WebSocket upgrades on the same endpoint
+export default createBunHandler(server, {
+  path: '/rpc',
   setupContext(ctx, req) {
     ctx.set(Headers, req.headers)
   },
 })
-
-Bun.serve({
-  routes: {
-    '/rpc': {
-      POST: (req) => rpcHandler(req),
-    },
-  },
-})
 ```
+
+> Use `createHttpHandler` from `krpc/http` for Cloudflare Workers, Deno, Hono, or HTTP-only endpoints, and `createWsHandler` from `krpc/ws` for standalone WebSocket servers.
 
 ### 3. Call with Client, Batch & Proxy
 
@@ -180,7 +179,8 @@ await peer.close()
 | ------------- | ---------------------------------------------------------------------------------------------------------- |
 | `krpc`        | Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, memory transports |
 | `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                       |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                                   |
+| `krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                |
+| `krpc/bun`    | `createBunHandler` (unified HTTP + WebSocket adapter for `Bun.serve`)                                      |
 | `krpc/stream` | `streamTransport`, `ndjson` and `content-length` framing helpers                                           |
 | `krpc/port`   | `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`                              |
 

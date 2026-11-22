@@ -269,34 +269,65 @@ try {
 }
 ```
 
-## Full-Duplex Peers & Push Notifications
+## Full-Duplex Peers, Early Reply & Push Notifications
 
-For bidirectional transports (`krpc/ws`, `krpc/stream`, `krpc/port`, or `createMemoryDuplexPair`), declare outbound notifications with `defineNotify` and connect both sides with `createPeer`.
+For bidirectional transports (`krpc/ws`, `krpc/bun`, `krpc/stream`, `krpc/port`, or `createMemoryDuplexPair`), declare outbound notifications with `defineNotify`.
+
+### Early Reply (`ctx.after`) & Silent-Drop `ctx.notify`
+
+- `ctx.notify(def, params?, to?)` returns `Promise<boolean>`: it validates registration and schema first, delivers to the active duplex peer (or a connected client ID when `to` is passed), and silently drops returning `false` on HTTP, closed sockets, or offline targets (never throws transport errors). Check `ctx.canNotify` if you need to branch on transport capability.
+- `ctx.after(fn)` schedules background work to run **after** the RPC response is sent without affecting the handler's inferred return type. On duplex transports (`server.connect` / `createPeer`), `ctx.after` flushes strictly after the response frame is written, guaranteeing clients receive the reply before subsequent `ctx.notify(...)` frames. On stateless HTTP, pass `waitUntil` to `createHttpHandler` / `createBunHandler` to keep background tasks alive in serverless runtimes.
+- `ctx.clientId` exposes the connected client's ID (set via `server.connect` or `createPeer(..., { id })`, or `undefined` on stateless HTTP).
 
 ```ts
-import { createPeer, defineMethod, defineNotify, defineService } from 'krpc'
+import {
+  createPeer,
+  createServer,
+  defineMethod,
+  defineNotify,
+  defineService,
+} from 'krpc'
+import { createBunHandler } from 'krpc/bun'
 import { wsTransport } from 'krpc/ws'
 
 const jobs = defineService(() => {
   const progress = defineNotify<{ jobId: string; percent: number }>()
 
-  const start = defineMethod(async ({ jobId }: { jobId: string }, ctx) => {
-    await ctx.notify(progress, { jobId, percent: 50 })
-    await ctx.notify(progress, { jobId, percent: 100 })
-    return { done: true }
+  const start = defineMethod(({ jobId }: { jobId: string }, ctx) => {
+    ctx.after(async () => {
+      await ctx.notify(progress, { jobId, percent: 50 })
+      await ctx.notify(progress, { jobId, percent: 100 })
+    })
+    return { accepted: true, clientId: ctx.clientId ?? null }
   })
 
-  return { start, progress }
+  // Push from any transport (including HTTP) to a specific connected WS client
+  const poke = defineMethod(
+    async ({ targetId, jobId }: { targetId: string; jobId: string }, ctx) => ({
+      delivered: await ctx.notify(progress, { jobId, percent: 100 }, targetId),
+    })
+  )
+
+  return { start, poke, progress }
 })
 
-// Server side: push inside a handler (ctx.notify) or outside (serverPeer.notify)
-const serverPeer = createPeer(serverTransport, jobs)
-await serverPeer.notify('progress', { jobId: '1', percent: 80 })
-await serverPeer.notify(jobs.progress, { jobId: '1', percent: 90 })
+// Single server serving both HTTP and WebSocket connections
+const server = createServer(jobs)
+Bun.serve({
+  port: 3000,
+  ...createBunHandler(server, {
+    path: '/rpc',
+    id: (req) => new URL(req.url).searchParams.get('clientId') ?? undefined,
+  }),
+})
+
+// Push from anywhere on the server by client ID (returns false if offline)
+await server.notify('user-1', 'progress', { jobId: '1', percent: 80 })
+await server.notify('user-1', jobs.progress, { jobId: '1', percent: 90 })
 
 // Client side: call methods and subscribe to server notifications
 const clientPeer = createPeer<typeof jobs>(
-  wsTransport(new WebSocket('ws://localhost:3000/rpc'))
+  wsTransport(new WebSocket('ws://localhost:3000/rpc?clientId=user-1'))
 )
 
 const off = clientPeer.on('progress', ({ jobId, percent }) => {
@@ -306,6 +337,8 @@ const off = clientPeer.on('progress', ({ jobId, percent }) => {
 await clientPeer.call('start', { jobId: '1' })
 off()
 ```
+
+For point-to-point duplex connections (such as Web Streams, `MessagePort`, or bidirectional peer-to-peer RPC where both sides call each other), attach any `DuplexTransport` with `server.connect(transport, options?)` or `createPeer(transport, service, options?)`.
 
 ## Type Utilities
 

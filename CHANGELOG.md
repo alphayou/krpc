@@ -16,14 +16,15 @@ Initial public release of `krpc`.
 - **Untyped external client support**: `createClient(transport)` and client-only `createPeer(transport)` work without an `<App>` generic to call any external JSON-RPC 2.0 server (e.g. Ethereum, LSP, MCP), returning `Result<unknown, JsonRpcErrorObject>` and supporting recursive `createProxy`.
 - **Result vs. Throw error boundary**: Protocol and domain errors always return `{ ok: false, error }`; infrastructure failures throw `KrpcTransportError`, `KrpcTimeoutError`, or `AbortError`.
 - **Server, Client, Peer & Auto-Batching**:
-  - `createServer` with batch limits (`maxBatchSize`), bounded `batchConcurrency`, error sanitization (`formatError`), and unserializable result `-32603` safety.
+  - `createServer` with batch limits (`maxBatchSize`), bounded `batchConcurrency`, error sanitization (`formatError`), unserializable result `-32603` safety, built-in full-duplex connection registry (`server.connect`, `server.notify`), and early reply (`ctx.after`).
   - `createClient` with variadic typed `batch`, per-call `timeout` / `AbortSignal`, and optional `createProxy`.
-  - `createPeer` for full-duplex RPC and typed push notifications (`ctx.notify`, `peer.notify`, `peer.on`).
+  - `createPeer` for full-duplex RPC and typed push notifications (`ctx.notify` with silent-drop `Promise<boolean>` and optional target `to` client ID, `ctx.clientId`, `peer.notify`, `peer.on`).
   - `batchTransport` wrapper to automatically coalesce concurrent `client.call` and `client.notify` calls into JSON-RPC 2.0 batches.
-- **5 pure Web Standard entry points**:
+- **6 pure Web Standard entry points**:
   - `krpc`: Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, `createMemoryTransport`, `createMemoryDuplexPair`, `isDuplexTransport`.
-  - `krpc/http`: Fetch-based `httpTransport` (with `FetchLike` custom `fetch` support) and `createHttpHandler` with incremental `maxBodySize` enforcement.
-  - `krpc/ws`: Web Standard `wsTransport` (with `CONNECTING` send queue) and `createWsServerTransport` bridge.
+  - `krpc/http`: Fetch-based `httpTransport` (with `FetchLike` custom `fetch` support) and `createHttpHandler` with incremental `maxBodySize` enforcement and `waitUntil` support for `ctx.after`.
+  - `krpc/ws`: Web Standard `wsTransport` (with `CONNECTING` send queue), `createWsServerTransport` bridge, and `createWsHandler` server callback adapter.
+  - `krpc/bun`: Unified HTTP + WebSocket `createBunHandler` adapter for `Bun.serve` using pure structural types (zero Bun-only runtime imports).
   - `krpc/stream`: Web Streams `streamTransport` with `ndjson` and `content-length` framing helpers.
   - `krpc/port`: `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`.
 - **Strict JSON-RPC 2.0 compliance**: Verified against all Section 7 specification examples, including Section 5 `void`/`undefined` -> `null` wire normalization, strict `id` and `params` validation, `rpc.` reserved method rejection, empty/mixed batch handling, and safe `-32603` fallbacks for unserializable values.

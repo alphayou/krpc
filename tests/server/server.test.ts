@@ -1,0 +1,793 @@
+import { describe, expect, it } from 'bun:test'
+import {
+  defineError,
+  JsonRpcError,
+  serverError,
+} from '../../src/protocol/errors'
+import { isPlainObject } from '../../src/protocol/guards'
+import type { StandardSchemaV1 } from '../../src/protocol/standard-schema'
+import { JSON_RPC_ERROR_CODES } from '../../src/protocol/types'
+import { createServer } from '../../src/server/server'
+import { defineContext } from '../../src/service/context'
+import { onAfter, onBefore, onError } from '../../src/service/hooks'
+import { defineMethod, defineNotify } from '../../src/service/method'
+import { defineService } from '../../src/service/service'
+
+const divideInputSchema: StandardSchemaV1<
+  { a: number; b?: number },
+  { a: number; b: number }
+> = {
+  '~standard': {
+    version: 1,
+    vendor: 'test',
+    validate(value) {
+      if (!isPlainObject(value) || typeof value.a !== 'number') {
+        return {
+          issues: [{ message: 'a must be a number', path: [{ key: 'a' }] }],
+        }
+      }
+      if (value.b !== undefined && typeof value.b !== 'number') {
+        return {
+          issues: [{ message: 'b must be a number', path: ['b'] }],
+        }
+      }
+      return { value: { a: value.a, b: value.b ?? 1 } }
+    },
+  },
+}
+
+const asyncOutputSchema: StandardSchemaV1<{ ok: boolean }, { ok: boolean }> = {
+  '~standard': {
+    version: 1,
+    vendor: 'test',
+    async validate(value) {
+      if (isPlainObject(value) && typeof value.ok === 'boolean') {
+        return { value: { ok: value.ok } }
+      }
+      return { issues: [{ message: 'Expected { ok: boolean }' }] }
+    },
+  },
+}
+
+describe('createServer — single requests and JSON-RPC 2.0 protocol rules', () => {
+  const DivByZero = defineError(-32002, 'Division by zero')
+  const Overflow = defineError(-32003, 'Overflow').data<{ max: number }>()
+
+  const app = defineService(() => {
+    const ping = defineMethod(() => 'pong' as const)
+    const noop = defineMethod(() => {})
+    const sum = defineMethod(([a, b]: [number, number]) => a + b)
+    const divide = defineMethod(divideInputSchema, ({ a, b }) => {
+      if (b === 0) return DivByZero()
+      if (a > 1000) return Overflow({ max: 1000 })
+      return a / b
+    })
+    const checkedOut = defineMethod(
+      { output: asyncOutputSchema },
+      (params: { valid: boolean }) =>
+        (params.valid ? { ok: true } : { ok: 'nope' }) as unknown as {
+          ok: boolean
+        }
+    )
+    const boom = defineMethod(() => {
+      throw new Error('sensitive database password')
+    })
+    const throwRpc = defineMethod(() => {
+      throw serverError(-32050, 'Service degraded', { region: 'us' })
+    })
+
+    return {
+      ping,
+      noop,
+      math: { sum, divide },
+      checkedOut,
+      boom,
+      throwRpc,
+    }
+  })
+
+  const server = createServer(app)
+
+  it('dispatches valid requests including id: null and void results', async () => {
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 1, method: 'ping' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: 'pong',
+    })
+
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: null, method: 'ping' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      result: 'pong',
+    })
+
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 0, method: 'noop' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 0,
+      result: null,
+    })
+
+    expect(
+      await server.handleRaw(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 's1',
+          method: 'math.sum',
+          params: [3, 4],
+        })
+      )
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 's1',
+      result: 7,
+    })
+  })
+
+  it('handles parse errors, invalid requests, missing methods, and reserved rpc.* methods', async () => {
+    expect(await server.handleRaw('{bad json')).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: JSON_RPC_ERROR_CODES.PARSE_ERROR,
+        message: 'Parse error',
+      },
+    })
+
+    expect(await server.handleRaw('[]')).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        message: 'Invalid Request',
+      },
+    })
+
+    expect(await server.handleRaw('42')).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        message: 'Invalid Request',
+      },
+    })
+
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'ping',
+        params: 'primitive-not-allowed',
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 5,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        message: 'Invalid Request',
+      },
+    })
+
+    expect(
+      await server.handle({ jsonrpc: '1.0', id: 5, method: 'ping' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        message: 'Invalid Request',
+      },
+    })
+
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 6, method: 'does.not.exist' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 6,
+      error: {
+        code: JSON_RPC_ERROR_CODES.METHOD_NOT_FOUND,
+        message: 'Method not found',
+      },
+    })
+
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 7, method: 'rpc.discover' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      error: {
+        code: JSON_RPC_ERROR_CODES.METHOD_NOT_FOUND,
+        message: 'Method not found',
+      },
+    })
+  })
+
+  it('allows reserved rpc.* methods when allowReservedMethods is enabled', async () => {
+    const reservedApp = defineService(() => ({
+      rpc: {
+        discover: defineMethod(() => ['rpc.discover']),
+      },
+    }))
+    const openServer = createServer(reservedApp, { allowReservedMethods: true })
+
+    expect(
+      await openServer.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'rpc.discover',
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: ['rpc.discover'],
+    })
+  })
+
+  it('validates Standard Schema input/output and passes through domain & JsonRpc errors', async () => {
+    // Default b = 1 applied by schema
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'math.divide',
+        params: { a: 9 },
+      })
+    ).toEqual({ jsonrpc: '2.0', id: 1, result: 9 })
+
+    // Input schema failure -> -32602 with compact issues
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'math.divide',
+        params: { a: 'bad' },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_PARAMS,
+        message: 'Invalid params',
+        data: { issues: [{ message: 'a must be a number', path: ['a'] }] },
+      },
+    })
+
+    // Returned domain errors
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'math.divide',
+        params: { a: 10, b: 0 },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 3,
+      error: { code: -32002, message: 'Division by zero' },
+    })
+
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'math.divide',
+        params: { a: 5000, b: 2 },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 4,
+      error: { code: -32003, message: 'Overflow', data: { max: 1000 } },
+    })
+
+    // Thrown JsonRpcError passes through
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 5, method: 'throwRpc' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 5,
+      error: {
+        code: -32050,
+        message: 'Service degraded',
+        data: { region: 'us' },
+      },
+    })
+
+    // Output schema success and failure (masked as -32603)
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'checkedOut',
+        params: { valid: true },
+      })
+    ).toEqual({ jsonrpc: '2.0', id: 6, result: { ok: true } })
+
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'checkedOut',
+        params: { valid: false },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    // Unexpected error is masked
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 8, method: 'boom' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 8,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+  })
+
+  it('supports custom formatError returning plain object or JsonRpcError', async () => {
+    const customPlain = createServer(app, {
+      formatError(err, ctx) {
+        return {
+          code: -32603,
+          message: `Failed in ${ctx.method}: ${String((err as Error).message)}`,
+        }
+      },
+    })
+
+    expect(
+      await customPlain.handle({ jsonrpc: '2.0', id: 1, method: 'boom' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      error: {
+        code: -32603,
+        message: 'Failed in boom: sensitive database password',
+      },
+    })
+
+    const customClass = createServer(app, {
+      formatError() {
+        return new JsonRpcError(-32099, 'Mapped error', { masked: true })
+      },
+    })
+
+    expect(
+      await customClass.handle({ jsonrpc: '2.0', id: 2, method: 'boom' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: { code: -32099, message: 'Mapped error', data: { masked: true } },
+    })
+  })
+})
+
+describe('createServer — notifications, hooks, context, and ctx.notify', () => {
+  const AuthHeader = defineContext<string>()
+  const CurrentUser = defineContext<{ name: string }>()
+  const Unauthorized = defineError(-32001, 'Unauthorized')
+
+  it('runs hooks in outer->inner before, inner->outer after, and inner->outer error order', async () => {
+    const trace: string[] = []
+
+    function useAuth() {
+      onBefore((ctx) => {
+        trace.push('auth.before')
+        const token = ctx.get(AuthHeader)
+        if (token !== 'secret') return Unauthorized()
+        ctx.set(CurrentUser, { name: 'Alice' })
+      })
+    }
+
+    const inner = defineService(() => {
+      useAuth()
+      onAfter((res) => {
+        trace.push(`inner.after:${JSON.stringify(res)}`)
+      })
+      onError((err) => {
+        trace.push(`inner.error:${(err as { code?: number }).code ?? 'err'}`)
+      })
+
+      const greet = defineMethod((_, ctx) => {
+        trace.push('handler')
+        return `Hello, ${ctx.require(CurrentUser).name}`
+      })
+      return { greet }
+    })
+
+    const root = defineService(() => {
+      onBefore(() => {
+        trace.push('root.before')
+      })
+      onAfter(() => {
+        trace.push('root.after')
+      })
+      onError(() => {
+        trace.push('root.error')
+        throw new Error('observer failure must not break response')
+      })
+      return { inner }
+    })
+
+    const server = createServer(root)
+
+    // Authorized request
+    const okRes = await server.handle(
+      { jsonrpc: '2.0', id: 1, method: 'inner.greet' },
+      {
+        setupContext(ctx) {
+          ctx.set(AuthHeader, 'secret')
+        },
+      }
+    )
+    expect(okRes).toEqual({ jsonrpc: '2.0', id: 1, result: 'Hello, Alice' })
+    expect(trace).toEqual([
+      'root.before',
+      'auth.before',
+      'handler',
+      'inner.after:"Hello, Alice"',
+      'root.after',
+    ])
+
+    // Short-circuited by onBefore returning RpcErrorValue
+    trace.length = 0
+    const errRes = await server.handle({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'inner.greet',
+    })
+    expect(errRes).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: { code: -32001, message: 'Unauthorized' },
+    })
+    expect(trace).toEqual([
+      'root.before',
+      'auth.before',
+      'inner.error:-32001',
+      'root.error',
+    ])
+  })
+
+  it('awaits Notifications without ever returning a response, even on errors', async () => {
+    let completed = false
+    const observedErrors: unknown[] = []
+
+    const app = defineService(() => {
+      onError((err, ctx) => {
+        observedErrors.push({
+          method: ctx.method,
+          isNotification: ctx.isNotification,
+          err,
+        })
+      })
+
+      const slowLog = defineMethod(async ({ msg }: { msg: string }, ctx) => {
+        expect(ctx.isNotification).toBe(true)
+        expect(ctx.id).toBeUndefined()
+        await new Promise((r) => setTimeout(r, 15))
+        completed = msg === 'done'
+      })
+
+      const failNotif = defineMethod(() => {
+        throw new Error('notif crash')
+      })
+
+      const schemaNotif = defineMethod(divideInputSchema, () => 'ok')
+      const domainErrNotif = defineMethod(() => Unauthorized())
+      const guarded = defineService(() => {
+        onBefore(() => Unauthorized())
+        return { blocked: defineMethod(() => 'never') }
+      })
+
+      return { slowLog, failNotif, schemaNotif, domainErrNotif, guarded }
+    })
+
+    const server = createServer(app)
+
+    const res = await server.handle({
+      jsonrpc: '2.0',
+      method: 'slowLog',
+      params: { msg: 'done' },
+    })
+    expect(res).toBeUndefined()
+    expect(completed).toBe(true)
+
+    expect(
+      await server.handle({ jsonrpc: '2.0', method: 'failNotif' })
+    ).toBeUndefined()
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        method: 'schemaNotif',
+        params: { a: 'bad' },
+      })
+    ).toBeUndefined()
+    expect(
+      await server.handle({ jsonrpc: '2.0', method: 'domainErrNotif' })
+    ).toBeUndefined()
+    expect(
+      await server.handle({ jsonrpc: '2.0', method: 'guarded.blocked' })
+    ).toBeUndefined()
+    expect(observedErrors).toHaveLength(4)
+
+    expect(
+      await server.handle({ jsonrpc: '2.0', method: 'missing' })
+    ).toBeUndefined()
+    expect(
+      await server.handle({ jsonrpc: '2.0', method: 'rpc.internal' })
+    ).toBeUndefined()
+  })
+
+  it('resolves and validates outbound ctx.notify() and forwards AbortSignal', async () => {
+    const progressSchema: StandardSchemaV1<
+      { jobId: string; percent: number },
+      { jobId: string; percent: number }
+    > = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate(value) {
+          if (
+            isPlainObject(value) &&
+            typeof value.jobId === 'string' &&
+            typeof value.percent === 'number'
+          ) {
+            return { value: { jobId: value.jobId, percent: value.percent } }
+          }
+          return { issues: [{ message: 'Invalid progress payload' }] }
+        },
+      },
+    }
+
+    const unregistered = defineNotify<{ x: number }>()
+
+    const job = defineService(() => {
+      const progress = defineNotify(progressSchema)
+      const done = defineNotify<{ jobId: string }>()
+
+      const run = defineMethod(async ({ jobId }: { jobId: string }, ctx) => {
+        if (!ctx.canNotify)
+          return { pushed: false, aborted: ctx.signal.aborted }
+        await ctx.notify(progress, { jobId, percent: 50 })
+        await ctx.notify(done, { jobId })
+        return { pushed: true, aborted: ctx.signal.aborted }
+      })
+
+      const pushInvalid = defineMethod(async (_, ctx) => {
+        await ctx.notify(progress, { jobId: '1', percent: 'bad' as never })
+      })
+
+      const pushUnregistered = defineMethod(async (_, ctx) => {
+        await ctx.notify(unregistered, { x: 1 })
+      })
+
+      return { progress, done, run, pushInvalid, pushUnregistered }
+    })
+
+    const app = defineService(() => ({ job }))
+    const server = createServer(app)
+
+    expect(server.resolveNotify(job.progress)?.name).toBe('job.progress')
+    expect(server.resolveNotify('job.progress')?.def).toBe(job.progress)
+    expect(server.resolveNotify('unknown.notify')).toBeUndefined()
+
+    // Without emitNotify: canNotify is false
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'job.run',
+        params: { jobId: 'j1' },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { pushed: false, aborted: false },
+    })
+
+    // With emitNotify and AbortSignal
+    const emitted: Array<{ method: string; params: unknown }> = []
+    const ac = new AbortController()
+    ac.abort()
+
+    expect(
+      await server.handle(
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'job.run',
+          params: { jobId: 'j2' },
+        },
+        {
+          signal: ac.signal,
+          emitNotify(method, params) {
+            emitted.push({ method, params })
+          },
+        }
+      )
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { pushed: true, aborted: true },
+    })
+
+    expect(emitted).toEqual([
+      { method: 'job.progress', params: { jobId: 'j2', percent: 50 } },
+      { method: 'job.done', params: { jobId: 'j2' } },
+    ])
+
+    // Invalid outbound notify schema payload is a server bug -> sanitized -32603
+    const badNotifyRes = await server.handle(
+      { jsonrpc: '2.0', id: 3, method: 'job.pushInvalid' },
+      { emitNotify() {} }
+    )
+    expect(badNotifyRes).toEqual({
+      jsonrpc: '2.0',
+      id: 3,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    // Unregistered NotifyDef fails cleanly as -32603
+    expect(
+      await server.handle(
+        { jsonrpc: '2.0', id: 4, method: 'job.pushUnregistered' },
+        { emitNotify() {} }
+      )
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 4,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    // Calling ctx.notify when transport has no emitNotify throws cleanly
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'job.pushUnregistered',
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 5,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+  })
+})
+
+describe('createServer — batch execution, maxBatchSize, and concurrency', () => {
+  it('handles empty batch, maxBatchSize, mixed valid/invalid/notification items, and all-notification batch', async () => {
+    const noted: number[] = []
+    const app = defineService(() => ({
+      double: defineMethod(({ n }: { n: number }) => n * 2),
+      note: defineMethod(({ n }: { n: number }) => {
+        noted.push(n)
+      }),
+    }))
+
+    const server = createServer(app, { maxBatchSize: 5 })
+
+    expect(await server.handle([])).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        message: 'Invalid Request',
+      },
+    })
+
+    const oversized = Array.from({ length: 6 }, (_, i) => ({
+      jsonrpc: '2.0',
+      id: i,
+      method: 'double',
+      params: { n: i },
+    }))
+    expect(await server.handle(oversized)).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+        message: 'Batch size exceeds maximum of 5',
+      },
+    })
+
+    // Mixed batch: valid requests, notification, and malformed item
+    const mixed = await server.handle([
+      { jsonrpc: '2.0', id: 1, method: 'double', params: { n: 2 } },
+      { jsonrpc: '2.0', method: 'note', params: { n: 99 } },
+      123,
+      { jsonrpc: '2.0', id: 2, method: 'double', params: { n: 5 } },
+    ])
+    expect(mixed).toEqual([
+      { jsonrpc: '2.0', id: 1, result: 4 },
+      {
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+          message: 'Invalid Request',
+        },
+      },
+      { jsonrpc: '2.0', id: 2, result: 10 },
+    ])
+    expect(noted).toEqual([99])
+
+    // All-notification batch returns undefined
+    const allNotifs = await server.handle([
+      { jsonrpc: '2.0', method: 'note', params: { n: 1 } },
+      { jsonrpc: '2.0', method: 'note', params: { n: 2 } },
+    ])
+    expect(allNotifs).toBeUndefined()
+    expect(noted).toEqual([99, 1, 2])
+  })
+
+  it('enforces batchConcurrency limits (sequential and bounded parallel)', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    const order: number[] = []
+
+    const app = defineService(() => ({
+      work: defineMethod(async ({ id, ms }: { id: number; ms: number }) => {
+        inFlight++
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise((r) => setTimeout(r, ms))
+        order.push(id)
+        inFlight--
+        return id
+      }),
+    }))
+
+    // Sequential: batchConcurrency = 1
+    const seqServer = createServer(app, { batchConcurrency: 1 })
+    const seqRes = await seqServer.handle([
+      { jsonrpc: '2.0', id: 1, method: 'work', params: { id: 1, ms: 20 } },
+      { jsonrpc: '2.0', id: 2, method: 'work', params: { id: 2, ms: 5 } },
+      { jsonrpc: '2.0', id: 3, method: 'work', params: { id: 3, ms: 5 } },
+    ])
+    expect(maxInFlight).toBe(1)
+    expect(order).toEqual([1, 2, 3])
+    expect(seqRes).toEqual([
+      { jsonrpc: '2.0', id: 1, result: 1 },
+      { jsonrpc: '2.0', id: 2, result: 2 },
+      { jsonrpc: '2.0', id: 3, result: 3 },
+    ])
+
+    // Bounded concurrency = 2
+    maxInFlight = 0
+    order.length = 0
+    const boundedServer = createServer(app, { batchConcurrency: 2 })
+    const boundedRes = await boundedServer.handle([
+      { jsonrpc: '2.0', id: 1, method: 'work', params: { id: 1, ms: 20 } },
+      { jsonrpc: '2.0', id: 2, method: 'work', params: { id: 2, ms: 20 } },
+      { jsonrpc: '2.0', id: 3, method: 'work', params: { id: 3, ms: 20 } },
+      { jsonrpc: '2.0', id: 4, method: 'work', params: { id: 4, ms: 20 } },
+    ])
+    expect(maxInFlight).toBe(2)
+    expect(boundedRes).toEqual([
+      { jsonrpc: '2.0', id: 1, result: 1 },
+      { jsonrpc: '2.0', id: 2, result: 2 },
+      { jsonrpc: '2.0', id: 3, result: 3 },
+      { jsonrpc: '2.0', id: 4, result: 4 },
+    ])
+  })
+})

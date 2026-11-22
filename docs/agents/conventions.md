@@ -10,7 +10,7 @@
   - `noImplicitOverride: true`
   - `noFallthroughCasesInSwitch: true`
 - **Tests**: `bun test` / `bun run test:coverage` (`bunfig.toml` sets `root = "tests"`). Include `@ts-expect-error` negative assertions in `tests/types.test.ts` for type-level constraints.
-- **Bundling**: `tsdown` ESM-only builds with `.d.mts` declarations, sourcemaps, and `treeshake: true` (`dist/`). Subpath entry points: `.` (`krpc`), `./http` (`krpc/http`), `./ws` (`krpc/ws`), and `./stream` (`krpc/stream`).
+- **Bundling**: `tsdown` ESM-only builds with `.d.mts` declarations, sourcemaps, and `treeshake: true` (`dist/`). Subpath entry points: `.` (`krpc`), `./http` (`krpc/http`), `./ws` (`krpc/ws`), `./stream` (`krpc/stream`), and `./port` (`krpc/port`).
 
 ## Formatting & Style
 

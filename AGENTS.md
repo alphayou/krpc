@@ -8,6 +8,7 @@
 - Quick commands:
   - `bun run verify` — format check, typecheck, and tests
   - `bun run test:coverage` — test suite with coverage (`tests/`)
+  - `bun run bench` — micro-benchmarks (`bench/rpc.bench.ts`)
   - `bun run build` — build ESM + `.d.mts` bundles via `tsdown`
   - `bun run format` — format files with Prettier
 
@@ -29,5 +30,6 @@ Read on demand — do not duplicate these docs here:
   - [docs/guide.md](./docs/guide.md) — API usage guide
   - [docs/transports.md](./docs/transports.md) — built-in and custom transports
   - [docs/protocol.md](./docs/protocol.md) — JSON-RPC 2.0 compliance reference
-  - [examples/](./examples/) — runnable end-to-end examples
+  - [examples/](./examples/) — runnable end-to-end examples (HTTP, WebSocket, Web Streams, `MessagePort`)
+  - [bench/](./bench/) — zero-dependency performance benchmarks
   - [CONTRIBUTING.md](./CONTRIBUTING.md) — contributor workflow

@@ -7,12 +7,13 @@
 
 ## Built-in Transports
 
-| Entry Point   | Exports                                                                                                                 | Model           | Best For                                        |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------- |
-| `krpc`        | `createMemoryTransport`, `createMemoryDuplexPair`, `isDuplexTransport`                                                  | Client & Duplex | Unit tests, SSR, in-process calls               |
-| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                                                | Duplex          | Real-time apps, server push, bidirectional RPC  |
-| `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | stdio, Web Workers, pipes, LSP-style framing    |
+| Entry Point   | Exports                                                                                                                 | Model           | Best For                                          |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------------- |
+| `krpc`        | `createMemoryTransport`, `createMemoryDuplexPair`, `batchTransport`, `isDuplexTransport`                                | Client & Duplex | Unit tests, SSR, in-process calls, auto-batching  |
+| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers   |
+| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                                                | Duplex          | Real-time apps, server push, bidirectional RPC    |
+| `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | stdio, pipes, IPC, LSP-style framing              |
+| `krpc/port`   | `portTransport`                                                                                                         | Duplex          | `MessageChannel`, Web Workers, `MessagePort` APIs |
 
 ## Memory (`krpc`)
 
@@ -42,6 +43,32 @@ const [serverTransport, clientTransport] = createMemoryDuplexPair()
 const serverPeer = createPeer(serverTransport, app)
 const clientPeer = createPeer<App>(clientTransport)
 ```
+
+## Auto-Batching (`batchTransport` in `krpc`)
+
+Wrap any `ClientTransport` with `batchTransport` to automatically coalesce concurrent `client.call` and `client.notify` invocations into a single JSON-RPC 2.0 batch array:
+
+```ts
+import { batchTransport, createClient } from 'krpc'
+import { httpTransport } from 'krpc/http'
+
+const client = createClient<App>(
+  batchTransport(httpTransport('http://localhost:3000/rpc'), {
+    windowMs: 0, // default: coalesce within current microtask; set > 0 for timer window
+    maxBatchSize: 50, // default: flush eagerly once queue reaches 50 items
+  })
+)
+
+// Sent as a single HTTP POST JSON-RPC batch request
+const [a, b] = await Promise.all([
+  client.call('math.add', { a: 1, b: 2 }),
+  client.call('math.add', { a: 3, b: 4 }),
+])
+```
+
+- **Single-item fast path**: If only one call is queued when flushing, it is sent as a single JSON-RPC object rather than a 1-element array.
+- **No nested batches**: Explicit `client.batch(...)` arrays pass straight through to the inner transport immediately.
+- **Per-call cancellation**: Aborting an `AbortSignal` before flush removes that call from the queue; aborting after flush rejects only that caller without disrupting sibling calls.
 
 ## HTTP (`krpc/http`)
 
@@ -189,6 +216,28 @@ const peer = createPeer(transport, app)
 
 Both modes enforce `maxMessageSize` to guard against unbounded buffers. Low-level framing helpers (`encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder`) are also exported from `krpc/stream` for custom byte-stream integrations.
 
+## MessagePort & Web Workers (`krpc/port`)
+
+`portTransport(port)` adapts any Web Standard `MessagePort`, `Worker`, or `DedicatedWorkerGlobalScope` into a `DuplexTransport`:
+
+```ts
+import { createPeer } from 'krpc'
+import { portTransport } from 'krpc/port'
+
+// Example with MessageChannel (same API works with new Worker(...) or self)
+const { port1, port2 } = new MessageChannel()
+const serverPeer = createPeer(portTransport(port1), app)
+const clientPeer = createPeer<App>(portTransport(port2))
+
+const res = await clientPeer.call('ping')
+await clientPeer.close()
+await serverPeer.close()
+```
+
+- Automatically calls `port.start?.()` so `MessagePort` instances deliver messages immediately with `addEventListener`.
+- Accepts string, structured object/array, and binary (`ArrayBuffer` / `ArrayBufferView`) inbound payloads cleanly.
+- Unsubscribes listeners on `close()`, calls `port.close?.()`, and fires `onClose` idempotently.
+
 ## Writing a Custom Transport
 
 ### `ClientTransport` Interface
@@ -235,28 +284,29 @@ export interface DuplexTransport {
 
 `DuplexTransport` passes raw UTF-8 JSON strings so `createPeer` handles `JSON.parse` and `-32700` Parse errors automatically.
 
-Example—a `MessagePort` transport for Web Workers or `MessageChannel`:
+Example—a `BroadcastChannel` transport for cross-tab messaging:
 
 ```ts
 import type { DuplexTransport } from 'krpc'
 
-export function messagePortTransport(port: MessagePort): DuplexTransport {
+export function broadcastChannelTransport(
+  channel: BroadcastChannel
+): DuplexTransport {
   const messageHandlers = new Set<(message: string) => void>()
   const closeHandlers = new Set<(reason?: unknown) => void>()
   let closed = false
 
-  const onPortMessage = (event: MessageEvent) => {
+  const onChannelMessage = (event: MessageEvent) => {
     if (typeof event.data !== 'string') return
     for (const handler of messageHandlers) handler(event.data)
   }
 
-  port.addEventListener('message', onPortMessage)
-  port.start()
+  channel.addEventListener('message', onChannelMessage)
 
   return {
     send(message) {
       if (closed) throw new Error('Transport is closed')
-      port.postMessage(message)
+      channel.postMessage(message)
     },
     onMessage(handler) {
       messageHandlers.add(handler)
@@ -273,8 +323,8 @@ export function messagePortTransport(port: MessagePort): DuplexTransport {
     close() {
       if (closed) return
       closed = true
-      port.removeEventListener('message', onPortMessage)
-      port.close()
+      channel.removeEventListener('message', onChannelMessage)
+      channel.close()
       for (const handler of closeHandlers) handler()
       messageHandlers.clear()
       closeHandlers.clear()

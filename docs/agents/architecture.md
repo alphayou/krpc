@@ -4,18 +4,20 @@
 
 ```text
 src/
-├── index.ts              # "krpc" entry point
+├── index.ts              # "krpc" entry point (core DSL, client/server/peer, memory & batchTransport)
 ├── http.ts               # "krpc/http" entry point
 ├── ws.ts                 # "krpc/ws" entry point
 ├── stream.ts             # "krpc/stream" entry point
+├── port.ts               # "krpc/port" entry point
 ├── protocol/             # JSON-RPC 2.0 wire types, guards, errors, inline Standard Schema v1
 ├── service/              # defineService, defineMethod, defineNotify, defineContext, on* hooks, type utils
 ├── server/               # createServer (dispatch, hooks, batch concurrency/limits, error sanitization)
 ├── client/               # createClient (call/notify/batch/timeout/abort), createProxy
 ├── peer/                 # createPeer (full-duplex RpcServer + KrpcClient + push notifications)
-└── transports/           # ClientTransport, DuplexTransport, memory, http, ws, stream
-tests/                    # Mirrors src/ plus compile-time tests/types.test.ts
-examples/                 # Runnable end-to-end examples (HTTP, WebSocket, Streams)
+└── transports/           # ClientTransport, DuplexTransport, memory, batch, http, ws, stream, port
+tests/                    # Mirrors src/ plus compile-time tests/types.test.ts and tests/treeshake.test.ts
+examples/                 # Runnable end-to-end examples (HTTP, WebSocket, Streams, MessagePort)
+bench/                    # Zero-dependency micro-benchmarks (`bun run bench`)
 ```
 
 ## Dependency & Runtime Boundaries

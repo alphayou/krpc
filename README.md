@@ -13,7 +13,7 @@ Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Stan
 - **TypeScript 7 inference**: Automatic `Result` / domain-error splitting from `return` values, compile-time structured `params` enforcement, reserved error-code guards, variadic `batch` tuples, and recursive `createProxy`.
 - **Standard Schema v1**: Plug in Zod, Valibot, ArkType, or any [Standard Schema v1](https://standardschema.dev/) validator with zero runtime dependencies.
 - **Result vs. Throw boundary**: Protocol and domain errors always return `{ ok: false, error }`; infrastructure errors throw `KrpcTransportError`, `KrpcTimeoutError`, or `AbortError`.
-- **Pure Web Standard transports**: Tree-shakeable ESM-only subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/stream`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
+- **Pure Web Standard transports**: Tree-shakeable ESM-only subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/stream`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
 
 ## Install
 
@@ -176,19 +176,20 @@ await peer.close()
 
 ## Entry Points
 
-| Import        | Exports                                                                                  |
-| ------------- | ---------------------------------------------------------------------------------------- |
-| `krpc`        | Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, memory transports |
-| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                     |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                 |
-| `krpc/stream` | `streamTransport`, `ndjson` and `content-length` framing helpers                         |
+| Import        | Exports                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------- |
+| `krpc`        | Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, memory transports |
+| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                       |
+| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                                   |
+| `krpc/stream` | `streamTransport`, `ndjson` and `content-length` framing helpers                                           |
+| `krpc/port`   | `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`                              |
 
 ## Documentation
 
 - [Guide](./docs/guide.md) — Services, validation, errors, context, hooks, clients, peers, and type utilities
-- [Transports](./docs/transports.md) — Memory, HTTP, WebSocket, Web Streams, and writing custom transports
+- [Transports](./docs/transports.md) — Memory, auto-batching (`batchTransport`), HTTP, WebSocket, Web Streams, `MessagePort` / Workers, and custom transports
 - [Protocol Reference](./docs/protocol.md) — JSON-RPC 2.0 compliance matrix, error codes, batching, and cancellation
-- [Examples](./examples/) — Runnable end-to-end examples
+- [Examples](./examples/) — Runnable end-to-end examples (`http.ts`, `ws-peer.ts`, `stream.ts`, `port.ts`)
 - [Contributing](./CONTRIBUTING.md) — Development workflow and conventions
 
 ## License

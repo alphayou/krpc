@@ -202,6 +202,8 @@ const [addRes, sumRes, logRes] = await client.batch((b) => [
 // logRes: undefined
 ```
 
+To automatically coalesce concurrent `client.call` / `client.notify` calls without rewriting call sites into `client.batch`, wrap your transport with [`batchTransport`](./transports.md#auto-batching-batchtransport-in-krpc).
+
 ### Proxy Client
 
 If you prefer property-style calls over string method names, wrap any `KrpcClient` or `KrpcPeer` with `createProxy`:
@@ -239,7 +241,7 @@ try {
 
 ## Full-Duplex Peers & Push Notifications
 
-For bidirectional transports (`krpc/ws`, `krpc/stream`, or `createMemoryDuplexPair`), declare outbound notifications with `defineNotify` and connect both sides with `createPeer`.
+For bidirectional transports (`krpc/ws`, `krpc/stream`, `krpc/port`, or `createMemoryDuplexPair`), declare outbound notifications with `defineNotify` and connect both sides with `createPeer`.
 
 ```ts
 import { createPeer, defineMethod, defineNotify, defineService } from 'krpc'

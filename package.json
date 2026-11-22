@@ -42,6 +42,18 @@
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs"
     },
+    "./http": {
+      "types": "./dist/http.d.mts",
+      "import": "./dist/http.mjs"
+    },
+    "./ws": {
+      "types": "./dist/ws.d.mts",
+      "import": "./dist/ws.mjs"
+    },
+    "./stream": {
+      "types": "./dist/stream.d.mts",
+      "import": "./dist/stream.mjs"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {

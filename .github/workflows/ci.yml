@@ -42,5 +42,56 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Lint package exports
+        run: bunx publint --strict
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Node.js ESM smoke check
+        run: |
+          node --input-type=module -e "
+            import assert from 'node:assert/strict'
+            import { defineService, defineMethod, createServer, createClient, createPeer, createMemoryTransport } from './dist/index.mjs'
+            import { createHttpHandler, httpTransport } from './dist/http.mjs'
+            import { wsTransport, createWsServerTransport } from './dist/ws.mjs'
+            import { streamTransport } from './dist/stream.mjs'
+            import { portTransport } from './dist/port.mjs'
+
+            const app = defineService(() => ({
+              add: defineMethod(([a, b]) => a + b),
+              noop: defineMethod(() => {}),
+            }))
+            const server = createServer(app)
+
+            const memClient = createClient(createMemoryTransport(server))
+            assert.deepEqual(await memClient.call('add', [2, 3]), { ok: true, value: 5 })
+            assert.deepEqual(await memClient.call('noop'), { ok: true, value: null })
+
+            const handler = createHttpHandler(server)
+            const httpClient = createClient(httpTransport('http://localhost/rpc', { fetch: (input, init) => handler(new Request(input, init)) }))
+            assert.deepEqual(await httpClient.call('add', [10, 20]), { ok: true, value: 30 })
+
+            assert.equal(typeof wsTransport, 'function')
+            assert.equal(typeof createWsServerTransport, 'function')
+
+            const c2s = new TransformStream()
+            const s2c = new TransformStream()
+            const sStream = createPeer(streamTransport({ readable: c2s.readable, writable: s2c.writable }), app)
+            const cStream = createPeer(streamTransport({ readable: s2c.readable, writable: c2s.writable }))
+            assert.deepEqual(await cStream.call('add', [4, 5]), { ok: true, value: 9 })
+            await cStream.close()
+            await sStream.close()
+
+            const { port1, port2 } = new MessageChannel()
+            const sPort = createPeer(portTransport(port1), app)
+            const cPort = createPeer(portTransport(port2))
+            assert.deepEqual(await cPort.call('add', [6, 7]), { ok: true, value: 13 })
+            await cPort.close()
+            await sPort.close()
+          "
+
       - name: Run examples
         run: bun run examples/http.ts && bun run examples/ws-peer.ts && bun run examples/stream.ts && bun run examples/port.ts

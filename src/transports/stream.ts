@@ -139,15 +139,16 @@ function assertValidMaxMessageSize(maxMessageSize: number): void {
 
 function findHeaderEnd(bytes: Uint8Array, start: number, end: number): number {
   const limit = end - 4
-  for (let i = start; i <= limit; i++) {
-    if (
-      bytes[i] === CR &&
-      bytes[i + 1] === LF &&
-      bytes[i + 2] === CR &&
-      bytes[i + 3] === LF
-    ) {
+  let i = start
+  while (i <= limit) {
+    i = bytes.indexOf(CR, i)
+    if (i === -1 || i > limit) {
+      return -1
+    }
+    if (bytes[i + 1] === LF && bytes[i + 2] === CR && bytes[i + 3] === LF) {
       return i
     }
+    i++
   }
   return -1
 }
@@ -158,10 +159,13 @@ function parseContentLengthHeader(headerText: string): number {
 
   for (const line of lines) {
     const colon = line.indexOf(':')
-    if (colon === -1) {
+    if (colon <= 0) {
       throw new KrpcTransportError(`Malformed frame header line: "${line}"`)
     }
     const name = line.slice(0, colon).trim().toLowerCase()
+    if (name.length === 0) {
+      throw new KrpcTransportError(`Malformed frame header line: "${line}"`)
+    }
     const value = line.slice(colon + 1).trim()
     if (name === 'content-length') {
       if (!/^\d+$/.test(value)) {
@@ -193,12 +197,14 @@ export function encodeNdjsonFrame(message: string): Uint8Array {
 
 /** Encode a single UTF-8 message with an LSP/MCP `Content-Length` byte-count header. */
 export function encodeContentLengthFrame(message: string): Uint8Array {
-  const encoder = getTextEncoder()
-  const body = encoder.encode(message)
-  const header = encoder.encode(`Content-Length: ${body.byteLength}\r\n\r\n`)
-  const frame = new Uint8Array(header.byteLength + body.byteLength)
-  frame.set(header, 0)
-  frame.set(body, header.byteLength)
+  const body = getTextEncoder().encode(message)
+  const header = `Content-Length: ${body.byteLength}\r\n\r\n`
+  const headerLen = header.length
+  const frame = new Uint8Array(headerLen + body.byteLength)
+  for (let i = 0; i < headerLen; i++) {
+    frame[i] = header.charCodeAt(i)
+  }
+  frame.set(body, headerLen)
   return frame
 }
 
@@ -342,10 +348,26 @@ export function createContentLengthDecoder(
             break
           }
 
+          const headerLength = headerEnd - queue.readOffset
+          if (headerLength > MAX_HEADER_SIZE) {
+            queue.clear()
+            scannedHeaderLength = 0
+            throw new KrpcTransportError(
+              `Frame header exceeds maximum size of ${MAX_HEADER_SIZE} bytes`
+            )
+          }
+
           const headerText = getTextDecoder().decode(
             queue.data.subarray(queue.readOffset, headerEnd)
           )
-          const length = parseContentLengthHeader(headerText)
+          let length: number
+          try {
+            length = parseContentLengthHeader(headerText)
+          } catch (err) {
+            queue.clear()
+            scannedHeaderLength = 0
+            throw err
+          }
           if (length > maxMessageSize) {
             queue.clear()
             scannedHeaderLength = 0

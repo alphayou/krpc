@@ -114,6 +114,32 @@ describe('createServer — single requests and JSON-RPC 2.0 protocol rules', () 
     })
 
     expect(
+      await server.handle({ jsonrpc: '2.0', id: '', method: 'ping' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: '',
+      result: 'pong',
+    })
+
+    // Preserves falsy valid IDs (0 and "") on Invalid Request errors and in batches
+    expect(
+      await server.handle([
+        { jsonrpc: '2.0', id: 0, method: 'ping', params: 'bad' },
+        { jsonrpc: '2.0', id: '', method: 'math.sum', params: [1, 2] },
+      ])
+    ).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: 0,
+        error: {
+          code: JSON_RPC_ERROR_CODES.INVALID_REQUEST,
+          message: 'Invalid Request',
+        },
+      },
+      { jsonrpc: '2.0', id: '', result: 3 },
+    ])
+
+    expect(
       await server.handleRaw(
         JSON.stringify({
           jsonrpc: '2.0',

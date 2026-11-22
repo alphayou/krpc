@@ -364,4 +364,127 @@ describe('createPeer — full-duplex RPC & push notifications', () => {
 
     await clientPeer.close()
   })
+
+  it('handles falsy IDs (0 and ""), batch errors, duplicate IDs, void notifies, async subscriber errors, and send failures', async () => {
+    const app = defineService(() => {
+      const heartbeat = defineNotify()
+      const ping = defineMethod(() => 'pong' as const)
+      const echo = defineMethod(({ v }: { v: string }) => v)
+      const fail = defineMethod(() => NotFound({ id: '42' }))
+      const pulse = defineMethod(async (_, ctx) => {
+        await ctx.notify(heartbeat)
+        return 'pulsed'
+      })
+      return { heartbeat, ping, echo, fail, pulse }
+    })
+
+    const [tA, tB] = createMockDuplexPair()
+    const serverPeer = createPeer(tB, app)
+    const ids: Array<number | string> = [0, '', 0, '']
+    let idx = 0
+    const clientPeer = createPeer<typeof app>(tA, undefined, {
+      nextId: () => ids[idx++]!,
+    })
+
+    // Async subscriber returning a rejected promise must be isolated cleanly
+    let heartbeats = 0
+    clientPeer.on('heartbeat', async () => {
+      heartbeats++
+      throw new Error('async subscriber failure')
+    })
+
+    // Single calls with falsy IDs (0 and "")
+    expect(await clientPeer.call('pulse')).toEqual({
+      ok: true,
+      value: 'pulsed',
+    })
+    expect(await clientPeer.call('echo', { v: 'empty-id' })).toEqual({
+      ok: true,
+      value: 'empty-id',
+    })
+
+    // Batch with falsy IDs (0 and ""), params, domain error, and void notify
+    const [echoRes, failRes, notifySlot] = await clientPeer.batch((b) => [
+      b.call('echo', { v: 'batched' }),
+      b.call('fail'),
+      b.notify('ping'),
+    ])
+    expect(echoRes).toEqual({ ok: true, value: 'batched' })
+    expect(failRes).toEqual({
+      ok: false,
+      error: { code: -32004, message: 'Not found', data: { id: '42' } },
+    })
+    expect(notifySlot).toBeUndefined()
+
+    // Void peer.notify on both server and client
+    await serverPeer.notify('heartbeat')
+    await clientPeer.notify('ping')
+    await new Promise((r) => setTimeout(r, 10))
+    expect(heartbeats).toBe(2)
+
+    // Pre-aborted signal on all-notification batch rejects without sending
+    const ac = new AbortController()
+    ac.abort(new Error('aborted-notify-batch'))
+    await expect(
+      clientPeer.batch((b) => [b.notify('ping')], { signal: ac.signal })
+    ).rejects.toThrow('aborted-notify-batch')
+
+    // Duplicate generated request ID in peer.batch rejects cleanly
+    const dupPeer = createPeer<typeof app>(tA, undefined, { nextId: () => 0 })
+    await expect(
+      dupPeer.batch((b) => [b.call('ping'), b.call('ping')])
+    ).rejects.toThrow('Duplicate JSON-RPC request id in batch')
+
+    await clientPeer.close()
+    // peer.notify after close throws Transport closed
+    await expect(clientPeer.notify('ping')).rejects.toThrow('Transport closed')
+
+    // Duplicate response ID in inbound batch response rejects cleanly
+    const [tC, tD] = createMockDuplexPair()
+    const peerC = createPeer<typeof app>(tC, undefined, { nextId: () => 0 })
+    const dupRespBatch = peerC.batch((b) => [b.call('ping')])
+    await new Promise((r) => setTimeout(r, 5))
+    tD.send(
+      JSON.stringify([
+        { jsonrpc: '2.0', id: 0, result: 'a' },
+        { jsonrpc: '2.0', id: 0, result: 'b' },
+      ])
+    )
+    await expect(dupRespBatch).rejects.toThrow(
+      'Duplicate JSON-RPC response id in batch'
+    )
+    await peerC.close()
+
+    // Failing transport.send wraps plain Error and preserves KrpcTransportError
+    let inboundHandler: ((m: string) => void) | undefined
+    let failMode: 'plain' | 'transport' = 'plain'
+    const flakyTransport: DuplexTransport = {
+      send() {
+        if (failMode === 'transport') {
+          throw new KrpcTransportError('already-transport')
+        }
+        throw new Error('raw-write-fail')
+      },
+      onMessage(h) {
+        inboundHandler = h
+        return () => {}
+      },
+      onClose() {
+        return () => {}
+      },
+      close() {},
+    }
+    const flakyPeer = createPeer<typeof app>(flakyTransport)
+
+    await expect(flakyPeer.call('ping')).rejects.toThrow(
+      'Failed to send JSON-RPC frame'
+    )
+    failMode = 'transport'
+    await expect(flakyPeer.batch((b) => [b.call('ping')])).rejects.toThrow(
+      'already-transport'
+    )
+    // sendFrameBestEffort catches synchronous transport.send errors cleanly
+    inboundHandler?.('{bad json')
+    await flakyPeer.close()
+  })
 })

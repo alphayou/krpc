@@ -246,7 +246,16 @@ export function createPeer<
     if (!batchEntry) return
 
     const slot = batchEntry.ids.get(entry.id)
-    if (slot === undefined || batchEntry.results[slot] !== undefined) return
+    if (slot === undefined) return
+    if (batchEntry.results[slot] !== undefined) {
+      removePendingBatch(batchEntry)
+      batchEntry.reject(
+        new KrpcTransportError(
+          `Duplicate JSON-RPC response id in batch: ${String(entry.id)}`
+        )
+      )
+      return
+    }
 
     batchEntry.results[slot] = isJsonRpcErrorResponse(entry)
       ? err(entry.error)
@@ -261,12 +270,30 @@ export function createPeer<
 
   const handleResponseBatch = (entries: readonly JsonRpcResponse[]): void => {
     const touchedBatches = new Set<PendingBatch>()
+    const seenIds = new Set<JsonRpcId>()
+    const duplicateBatches = new Map<PendingBatch, JsonRpcId>()
 
     for (const entry of entries) {
       const batchEntry = batchById.get(entry.id)
-      if (batchEntry) {
+      if (!batchEntry) continue
+      if (seenIds.has(entry.id)) {
+        duplicateBatches.set(batchEntry, entry.id)
+      } else {
+        seenIds.add(entry.id)
         touchedBatches.add(batchEntry)
       }
+    }
+
+    for (const [batchEntry, dupId] of duplicateBatches) {
+      removePendingBatch(batchEntry)
+      batchEntry.reject(
+        new KrpcTransportError(
+          `Duplicate JSON-RPC response id in batch: ${String(dupId)}`
+        )
+      )
+    }
+
+    for (const entry of entries) {
       handleResponseEntry(entry)
     }
 
@@ -464,6 +491,11 @@ export function createPeer<
       const item = items[i] as BatchItem
       if (item.kind === 'call') {
         const id = nextId()
+        if (idToSlot.has(id)) {
+          throw new KrpcTransportError(
+            `Duplicate JSON-RPC request id in batch: ${String(id)}`
+          )
+        }
         idToSlot.set(id, i)
         payload[i] =
           item.params === undefined
@@ -478,7 +510,11 @@ export function createPeer<
     }
 
     if (idToSlot.size === 0) {
-      await sendFrame(payload)
+      await runWithCallOptions(
+        () => sendFrame(payload),
+        defaultTimeout,
+        callOptions
+      )
       return results as unknown as BatchResults<T>
     }
 

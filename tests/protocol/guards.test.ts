@@ -171,6 +171,13 @@ describe('isJsonRpcRequest and isJsonRpcNotification', () => {
 
     expect(isJsonRpcRequest(nullIdRequest)).toBe(true)
     expect(isJsonRpcNotification(nullIdRequest)).toBe(false)
+
+    // Falsy valid IDs (0 and "") are Requests, never Notifications.
+    for (const falsyId of [0, ''] as const) {
+      const req = { jsonrpc: '2.0', id: falsyId, method: 'ping' }
+      expect(isJsonRpcRequest(req)).toBe(true)
+      expect(isJsonRpcNotification(req)).toBe(false)
+    }
   })
 
   it('treats explicit id: undefined as a Notification, not a Request', () => {
@@ -258,6 +265,16 @@ describe('isJsonRpcResponse, isJsonRpcSuccessResponse, isJsonRpcErrorResponse', 
         jsonrpc: '2.0',
         id: '1',
         error: { code: -32003, message: 'Overflow', data: { max: 100 } },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 0,
+        error: { code: -32601, message: 'Method not found' },
+      },
+      {
+        jsonrpc: '2.0',
+        id: '',
+        error: { code: -32602, message: 'Invalid params' },
       },
     ]
 

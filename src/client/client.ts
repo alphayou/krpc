@@ -315,6 +315,11 @@ export function createClient<App>(
       const item = items[i] as BatchItem
       if (item.kind === 'call') {
         const id = nextId()
+        if (idToSlot.has(id)) {
+          throw new KrpcTransportError(
+            `Duplicate JSON-RPC request id in batch: ${String(id)}`
+          )
+        }
         idToSlot.set(id, i)
         payload[i] =
           item.params === undefined

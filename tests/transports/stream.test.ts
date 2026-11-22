@@ -214,6 +214,80 @@ describe('stream framing helpers', () => {
     expect(() => hugeHeader.push(new Uint8Array(9000).fill(0x41))).toThrow(
       KrpcTransportError
     )
+
+    // Oversized header arriving in a single chunk WITH delimiter is also rejected.
+    const hugeHeaderDelimited = createContentLengthDecoder(() => {})
+    expect(() =>
+      hugeHeaderDelimited.push(
+        encoder.encode(
+          `X-Pad: ${'a'.repeat(9000)}\r\nContent-Length: 2\r\n\r\n{}`
+        )
+      )
+    ).toThrow(KrpcTransportError)
+
+    // Negative, float, empty, safe-integer overflow, and empty header name are rejected,
+    // and decoder clears its queue cleanly after throwing.
+    for (const badHeader of [
+      'Content-Length: -5\r\n\r\n',
+      'Content-Length: 12.5\r\n\r\n',
+      'Content-Length: \r\n\r\n',
+      'Content-Length: 999999999999999999999\r\n\r\n',
+      ': 42\r\nContent-Length: 2\r\n\r\n{}',
+      '   : 42\r\nContent-Length: 2\r\n\r\n{}',
+    ]) {
+      const dec = createContentLengthDecoder(() => {})
+      expect(() => dec.push(encoder.encode(badHeader))).toThrow(
+        KrpcTransportError
+      )
+      expect(() => dec.flush()).not.toThrow()
+    }
+
+    // LSP-style multi-header block with case-insensitive CONTENT-LENGTH and 0-byte body.
+    const lspReceived: string[] = []
+    const lspDec = createContentLengthDecoder((msg) => lspReceived.push(msg))
+    lspDec.push(new Uint8Array(0))
+    const lspBody = '{"jsonrpc":"2.0","id":0,"method":"ping"}'
+    lspDec.push(
+      encoder.encode(
+        `Content-Type: application/vscode-jsonrpc; charset=utf-8\r\nCONTENT-LENGTH: ${lspBody.length}\r\n\r\n${lspBody}` +
+          'Content-Length: 0\r\n\r\n'
+      )
+    )
+    lspDec.flush()
+    expect(lspReceived).toEqual([lspBody, ''])
+  })
+
+  test('covers empty chunks, ByteQueue compaction, and ndjson trailing CR flush', () => {
+    const received: string[] = []
+    const ndjson = createNdjsonDecoder((msg) => received.push(msg), 10)
+    ndjson.push(new Uint8Array(0))
+    ndjson.push(encoder.encode('hello\r'))
+    ndjson.flush()
+    expect(received).toEqual(['hello'])
+
+    // Trailing bare CR flushes cleanly without emitting empty message
+    ndjson.push(encoder.encode('\r'))
+    ndjson.flush()
+    expect(received).toEqual(['hello'])
+
+    // Trigger ByteQueue in-place compaction (readOffset >= capacity / 2, remaining > 0)
+    const compactReceived: string[] = []
+    const cl = createContentLengthDecoder((msg) => compactReceived.push(msg))
+    const first = encodeContentLengthFrame('a'.repeat(3000))
+    const second = encodeContentLengthFrame('b'.repeat(600))
+    const third = encodeContentLengthFrame('c'.repeat(600))
+    const combined = new Uint8Array(first.byteLength + 10)
+    combined.set(first, 0)
+    combined.set(second.subarray(0, 10), first.byteLength)
+    cl.push(combined)
+    cl.push(second.subarray(10))
+    cl.push(third)
+    cl.flush()
+    expect(compactReceived).toEqual([
+      'a'.repeat(3000),
+      'b'.repeat(600),
+      'c'.repeat(600),
+    ])
   })
 
   test('handles large multi-chunk frames across buffer growth and compaction', () => {

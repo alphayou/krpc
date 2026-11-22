@@ -224,6 +224,98 @@ describe('createClient — call & notify', () => {
       })
     ).rejects.toThrow('user-cancel')
   })
+
+  it('handles falsy valid JsonRpcId values (0 and "") across single calls and batches', async () => {
+    const server = createServer(app)
+    const reverseTransport: ClientTransport = async (payload) => {
+      const res = await server.handle(payload)
+      return Array.isArray(res)
+        ? ([...res].reverse() as JsonRpcResponsePayload)
+        : res
+    }
+
+    const ids: Array<number | string> = [0, '', 0, '']
+    let idx = 0
+    const client = createClient<App>(reverseTransport, {
+      nextId: () => ids[idx++]!,
+    })
+
+    expect(await client.call('ping')).toEqual({ ok: true, value: 'pong' })
+    expect(await client.call('math.sum', [2, 3])).toEqual({
+      ok: true,
+      value: 5,
+    })
+
+    const [first, second] = await client.batch((b) => [
+      b.call('math.divide', { a: 10, b: 0 }),
+      b.call('math.sum', [7, 8]),
+    ])
+    expect(first).toEqual({
+      ok: false,
+      error: { code: -32002, message: 'Division by zero' },
+    })
+    expect(second).toEqual({ ok: true, value: 15 })
+  })
+
+  it('covers timeout success/failure, signal transport failure, and AbortSignal without reason', async () => {
+    const { transport } = mockTransportFromServer()
+    const timedClient = createClient<App>(transport, { timeout: 200 })
+    expect(await timedClient.call('ping')).toEqual({ ok: true, value: 'pong' })
+
+    const failingTransport: ClientTransport = async () => {
+      throw new KrpcTransportError('boom')
+    }
+    const failingClient = createClient<App>(failingTransport)
+
+    // Transport error with timeout configured (no timeout hit)
+    await expect(
+      failingClient.call('ping', undefined, { timeout: 200 })
+    ).rejects.toThrow('boom')
+
+    // Transport error with non-aborted signal (no timeout)
+    const ac = new AbortController()
+    await expect(
+      failingClient.call('ping', undefined, { signal: ac.signal })
+    ).rejects.toThrow('boom')
+
+    // Transport rejects after external signal aborts (with and without timeout)
+    const abortingTransport =
+      (controller: AbortController): ClientTransport =>
+      async () => {
+        controller.abort(new Error('late-abort'))
+        throw new Error('underlying-err')
+      }
+    const ac2 = new AbortController()
+    await expect(
+      createClient<App>(abortingTransport(ac2)).call('ping', undefined, {
+        signal: ac2.signal,
+      })
+    ).rejects.toThrow('late-abort')
+
+    const ac3 = new AbortController()
+    await expect(
+      createClient<App>(abortingTransport(ac3)).call('ping', undefined, {
+        timeout: 200,
+        signal: ac3.signal,
+      })
+    ).rejects.toThrow('late-abort')
+
+    // AbortSignal with undefined reason falls back to standard AbortError DOMException
+    const fakeSignal = {
+      aborted: true,
+      reason: undefined,
+      addEventListener() {},
+      removeEventListener() {},
+    } as unknown as AbortSignal
+    let abortErr: unknown
+    try {
+      await timedClient.call('ping', undefined, { signal: fakeSignal })
+    } catch (err) {
+      abortErr = err
+    }
+    expect(abortErr).toBeInstanceOf(DOMException)
+    expect((abortErr as DOMException).name).toBe('AbortError')
+  })
 })
 
 describe('createClient — batch', () => {
@@ -319,5 +411,12 @@ describe('createClient — batch', () => {
         b.call('ping'),
       ])
     ).rejects.toThrow('Incomplete JSON-RPC batch response')
+
+    // Duplicate request IDs produced by a custom nextId fail fast
+    const { transport } = mockTransportFromServer()
+    const dupIdClient = createClient<App>(transport, { nextId: () => 0 })
+    await expect(
+      dupIdClient.batch((b) => [b.call('ping'), b.call('ping')])
+    ).rejects.toThrow('Duplicate JSON-RPC request id in batch')
   })
 })

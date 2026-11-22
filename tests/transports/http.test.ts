@@ -295,6 +295,130 @@ describe('createHttpHandler streaming maxBodySize and edge cases', () => {
       id: null,
       error: { code: -32700, message: 'Parse error' },
     })
+
+    // Empty ReadableStream body (0 chunks) & zero-length chunks yield -32700 Parse error.
+    const emptyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(0))
+        controller.close()
+      },
+    })
+    const emptyStreamRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: emptyStream,
+      })
+    )
+    expect(emptyStreamRes.status).toBe(200)
+    expect(await emptyStreamRes.json()).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32700, message: 'Parse error' },
+    })
+
+    // Whitespace-only POST body yields -32700 Parse error.
+    const whitespaceRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '   \r\n\t  ',
+      })
+    )
+    expect(whitespaceRes.status).toBe(200)
+    expect(await whitespaceRes.json()).toEqual({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32700, message: 'Parse error' },
+    })
+  })
+
+  test('handles invalid Content-Length headers and Content-Type charset variations', async () => {
+    const { app } = createTestApp()
+    const handler = createHttpHandler(createServer(app), { maxBodySize: 128 })
+    const validBody = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'echo',
+      params: { message: 'ok' },
+    })
+
+    // Invalid Content-Length headers fall back safely to streaming byte counting.
+    for (const badLen of ['abc', '-10', '12.5', '10, 20']) {
+      const okRes = await handler(
+        new Request('http://localhost/rpc', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': badLen,
+          },
+          body: validBody,
+        })
+      )
+      expect(okRes.status).toBe(200)
+      expect(await okRes.json()).toEqual({
+        jsonrpc: '2.0',
+        id: 1,
+        result: { message: 'ok', auth: null },
+      })
+
+      // Oversized body is STILL rejected with 413 despite malformed Content-Length.
+      const bigRes = await handler(
+        new Request('http://localhost/rpc', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': badLen,
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'echo',
+            params: { message: 'x'.repeat(200) },
+          }),
+        })
+      )
+      expect(bigRes.status).toBe(413)
+    }
+
+    // Spoofed small Content-Length with oversized actual body still returns 413.
+    const spoofedRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': '10',
+        },
+        body: 'x'.repeat(200),
+      })
+    )
+    expect(spoofedRes.status).toBe(413)
+
+    // Quoted/multi-param charset variations succeed; non-application/json subtypes return 415.
+    for (const ct of [
+      'application/json; charset="UTF-8"',
+      'Application/JSON ; charset=utf-8 ; version=2',
+    ]) {
+      const res = await handler(
+        new Request('http://localhost/rpc', {
+          method: 'POST',
+          headers: { 'content-type': ct },
+          body: validBody,
+        })
+      )
+      expect(res.status).toBe(200)
+    }
+
+    for (const badCt of ['application/json-rpc', 'application/problem+json']) {
+      const res = await handler(
+        new Request('http://localhost/rpc', {
+          method: 'POST',
+          headers: { 'content-type': badCt },
+          body: validBody,
+        })
+      )
+      expect(res.status).toBe(415)
+    }
   })
 
   test('rejects invalid maxBodySize options', () => {
@@ -381,5 +505,29 @@ describe('httpTransport unit edge cases', () => {
     }
     expect(bodyErr).toBeInstanceOf(KrpcTransportError)
     expect((bodyErr as KrpcTransportError).status).toBe(200)
+
+    // Aborting while reading response.text() rethrows abort error without wrapping
+    const bodyAbortController = new AbortController()
+    const abortBodyTransport = httpTransport('http://example.test/rpc', {
+      fetch: (async () => ({
+        ok: true,
+        status: 200,
+        text: async () => {
+          bodyAbortController.abort()
+          throw new DOMException('Aborted', 'AbortError')
+        },
+      })) as unknown as typeof fetch,
+    })
+    let bodyAbortErr: unknown
+    try {
+      await abortBodyTransport(
+        { jsonrpc: '2.0', id: 1, method: 'ping' },
+        { signal: bodyAbortController.signal }
+      )
+    } catch (err) {
+      bodyAbortErr = err
+    }
+    expect(bodyAbortErr).not.toBeInstanceOf(KrpcTransportError)
+    expect((bodyAbortErr as Error).name).toBe('AbortError')
   })
 })

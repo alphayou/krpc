@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { createPeer } from '../../src/peer/peer'
-import { defineError, KrpcTransportError } from '../../src/protocol/errors'
+import {
+  defineError,
+  JsonRpcError,
+  KrpcTransportError,
+} from '../../src/protocol/errors'
 import { createServer } from '../../src/server/server'
 import { defineContext } from '../../src/service/context'
 import { onError } from '../../src/service/hooks'
@@ -645,5 +649,81 @@ describe('createHttpHandler — ctx.after(waitUntil), silent ctx.notify, and HTT
 
     await duplexClient.close()
     await conn.close()
+  })
+
+  test('isolates throwing setupContext into JSON-RPC error responses instead of crashing HTTP handler', async () => {
+    const { app } = createTestApp()
+    const server = createServer(app)
+    const handler = createHttpHandler(server, {
+      async setupContext(_ctx, req) {
+        const mode = req.headers.get('x-fail-mode')
+        if (mode === 'auth') {
+          throw new JsonRpcError(-32001, 'Missing credentials')
+        }
+        if (mode === 'boom') {
+          throw new Error('internal secret')
+        }
+      },
+    })
+
+    const authRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-fail-mode': 'auth',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'echo',
+          params: { message: 'hi' },
+        }),
+      })
+    )
+    expect(authRes.status).toBe(200)
+    expect(await authRes.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      error: { code: -32001, message: 'Missing credentials' },
+    })
+
+    const boomRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-fail-mode': 'boom',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'echo',
+          params: { message: 'hi' },
+        }),
+      })
+    )
+    expect(boomRes.status).toBe(200)
+    expect(await boomRes.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: { code: -32603, message: 'Internal error' },
+    })
+
+    const notifRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-fail-mode': 'auth',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notify',
+          params: { note: 'ignored' },
+        }),
+      })
+    )
+    expect(notifRes.status).toBe(204)
   })
 })

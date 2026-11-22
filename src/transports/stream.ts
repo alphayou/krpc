@@ -437,8 +437,12 @@ export function streamTransport(
     if (closed) {
       return
     }
-    for (const handler of messageHandlers) {
-      handler(message)
+    for (const handler of [...messageHandlers]) {
+      try {
+        handler(message)
+      } catch {
+        // Isolate listener exceptions from the stream read loop.
+      }
     }
   }
 
@@ -452,7 +456,11 @@ export function streamTransport(
     closeHandlers.clear()
     messageHandlers.clear()
     for (const handler of handlers) {
-      handler(reason)
+      try {
+        handler(reason)
+      } catch {
+        // Isolate close listener exceptions from stream cleanup.
+      }
     }
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createPeer } from '../../src/peer/peer'
-import { KrpcTransportError } from '../../src/protocol/errors'
+import { JsonRpcError, KrpcTransportError } from '../../src/protocol/errors'
 import { createServer, type ServerConnection } from '../../src/server/server'
 import { defineContext } from '../../src/service/context'
 import { defineMethod, defineNotify } from '../../src/service/method'
@@ -231,6 +231,35 @@ describe('wsTransport (unit)', () => {
     transport.close()
     expect(closeCalled).toBe(false)
   })
+
+  test('isolates throwing onMessage and onClose listeners without breaking sibling listeners or socket.close()', () => {
+    const socket = new MockWebSocket(1)
+    const transport = wsTransport(socket)
+
+    const received: string[] = []
+    transport.onMessage(() => {
+      throw new Error('bad message listener')
+    })
+    transport.onMessage((msg) => {
+      received.push(msg)
+    })
+
+    socket.emit('message', { data: 'first' })
+    socket.emit('message', { data: 'second' })
+    expect(received).toEqual(['first', 'second'])
+
+    let siblingClosed = 0
+    transport.onClose(() => {
+      throw new Error('bad close listener')
+    })
+    transport.onClose(() => {
+      siblingClosed++
+    })
+
+    transport.close()
+    expect(siblingClosed).toBe(1)
+    expect(socket.closedCount).toBe(1)
+  })
 })
 
 describe('createWsServerTransport (unit)', () => {
@@ -304,6 +333,37 @@ describe('createWsServerTransport (unit)', () => {
     })
     await Promise.resolve()
     expect(lateNotified).toBe(true)
+  })
+
+  test('isolates throwing onMessage and onClose listeners on server bridge', () => {
+    let closeCalls = 0
+    const bridge = createWsServerTransport({
+      send() {},
+      close() {
+        closeCalls++
+      },
+    })
+
+    const received: string[] = []
+    bridge.transport.onMessage(() => {
+      throw new Error('msg boom')
+    })
+    bridge.transport.onMessage((msg) => received.push(msg))
+
+    bridge.handleMessage('hello')
+    expect(received).toEqual(['hello'])
+
+    let siblingClosed = 0
+    bridge.transport.onClose(() => {
+      throw new Error('close boom')
+    })
+    bridge.transport.onClose(() => {
+      siblingClosed++
+    })
+
+    bridge.transport.close()
+    expect(siblingClosed).toBe(1)
+    expect(closeCalls).toBe(1)
   })
 })
 
@@ -574,5 +634,64 @@ describe('createWsHandler', () => {
     } finally {
       await bunServer.stop(true)
     }
+  })
+
+  test('isolates throwing setupContext without breaking the WebSocket message loop', async () => {
+    const app = defineService(() => ({
+      ping: defineMethod(() => 'pong' as const),
+    }))
+    const rpcServer = createServer(app)
+    let mode: 'auth' | 'boom' | 'ok' = 'auth'
+
+    const handler = createWsHandler(rpcServer, {
+      async setupContext() {
+        if (mode === 'auth') throw new JsonRpcError(-32001, 'Auth failed')
+        if (mode === 'boom') throw new Error('unexpected secret')
+      },
+    })
+
+    const sent: string[] = []
+    const mockWs: ServerWebSocketLike = {
+      send(data) {
+        sent.push(data)
+      },
+      close() {},
+    }
+
+    handler.open(mockWs)
+    handler.message(
+      mockWs,
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' })
+    )
+    await Bun.sleep(10)
+
+    mode = 'boom'
+    handler.message(
+      mockWs,
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' })
+    )
+    await Bun.sleep(10)
+
+    mode = 'ok'
+    handler.message(
+      mockWs,
+      JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'ping' })
+    )
+    await Bun.sleep(10)
+
+    expect(sent.map((frame) => JSON.parse(frame))).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        error: { code: -32001, message: 'Auth failed' },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        error: { code: -32603, message: 'Internal error' },
+      },
+      { jsonrpc: '2.0', id: 3, result: 'pong' },
+    ])
+    handler.close(mockWs, 1000, 'done')
   })
 })

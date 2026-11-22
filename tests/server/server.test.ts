@@ -5,14 +5,14 @@ import {
   JsonRpcError,
   serverError,
 } from '../../src/protocol/errors'
-import { isPlainObject } from '../../src/protocol/guards'
+import { isPlainObject, parseJsonRpcPayload } from '../../src/protocol/guards'
 import type { StandardSchemaV1 } from '../../src/protocol/standard-schema'
 import { JSON_RPC_ERROR_CODES } from '../../src/protocol/types'
 import { createServer, type RpcServer } from '../../src/server/server'
 import { createRpcContext, defineContext } from '../../src/service/context'
 import { onAfter, onBefore, onError } from '../../src/service/hooks'
 import { defineMethod, defineNotify } from '../../src/service/method'
-import { defineService } from '../../src/service/service'
+import { compileService, defineService } from '../../src/service/service'
 import { createHttpHandler } from '../../src/transports/http'
 import { createMemoryDuplexPair } from '../../src/transports/memory'
 
@@ -1616,5 +1616,189 @@ describe('createServer — server.connect(), server.notify(), and targeted ctx.n
     expect(standaloneCtx.clientId).toBeUndefined()
     expect(standaloneCtx.canNotify).toBe(false)
     expect(await standaloneCtx.notify(job.ping)).toBe(false)
+  })
+})
+
+describe('createServer — adversarial security & failure isolation', () => {
+  it('rejects Object.prototype keys with -32601 and resists prototype pollution', async () => {
+    const app = defineService(() => ({
+      ping: defineMethod(() => 'pong' as const),
+      echo: defineMethod((params: Record<string, unknown>) => params),
+    }))
+    const server = createServer(app)
+
+    for (const key of [
+      '__proto__',
+      'constructor',
+      'toString',
+      'valueOf',
+      'hasOwnProperty',
+    ]) {
+      expect(
+        await server.handle({ jsonrpc: '2.0', id: key, method: key })
+      ).toEqual({
+        jsonrpc: '2.0',
+        id: key,
+        error: {
+          code: JSON_RPC_ERROR_CODES.METHOD_NOT_FOUND,
+          message: 'Method not found',
+        },
+      })
+    }
+
+    const rawProtoPayload =
+      '{"jsonrpc":"2.0","id":1,"method":"echo","__proto__":{"polluted":true},"params":{"__proto__":{"polluted":true},"ok":1}}'
+    const parsed = parseJsonRpcPayload(rawProtoPayload)
+    expect(parsed.ok).toBe(true)
+    const res = await server.handleRaw(rawProtoPayload)
+    expect(res).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: JSON.parse('{"__proto__":{"polluted":true},"ok":1}'),
+    })
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+
+    // Own __proto__ key inside a service tree does not mutate prototype chain
+    const customTree: Record<string, ReturnType<typeof defineMethod>> = {}
+    Object.defineProperty(customTree, '__proto__', {
+      value: defineMethod(() => 'own'),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+    const wrapped = defineService(() => {
+      onBefore(() => {})
+      return customTree
+    })
+    expect(Object.getPrototypeOf(wrapped)).toBe(Object.prototype)
+    expect(compileService(wrapped).methods.has('__proto__')).toBe(true)
+  })
+
+  it('isolates throwing setupContext, onAfter, and onError hooks without unhandled rejections', async () => {
+    const observed: string[] = []
+    let afterTaskRan = false
+
+    const app = defineService(() => {
+      onError(async (err) => {
+        observed.push(
+          `first:${err instanceof Error ? err.message : String(err)}`
+        )
+        throw new Error('sync-or-async-observer-crash')
+      })
+      onError((err) => {
+        observed.push(
+          `second:${err instanceof Error ? err.message : String(err)}`
+        )
+      })
+      onAfter((result) => {
+        if (result === 'fail-after-rpc') {
+          throw new JsonRpcError(-32040, 'After rejected')
+        }
+        if (result === 'fail-after-unknown') {
+          throw new Error('secret after failure')
+        }
+      })
+
+      const run = defineMethod(({ mode }: { mode?: string } = {}, ctx) => {
+        ctx.after(() => {
+          afterTaskRan = true
+        })
+        return mode ?? 'ok'
+      })
+      return { run }
+    })
+
+    const server = createServer(app)
+
+    // setupContext throwing JsonRpcError preserves wire error and runs all error hooks
+    const authErr = await server.handle(
+      { jsonrpc: '2.0', id: 1, method: 'run' },
+      {
+        async setupContext() {
+          throw new JsonRpcError(-32001, 'Unauthorized')
+        },
+      }
+    )
+    expect(authErr).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      error: { code: -32001, message: 'Unauthorized' },
+    })
+    expect(observed).toEqual(['first:Unauthorized', 'second:Unauthorized'])
+
+    // setupContext throwing unexpected Error masks to -32603
+    observed.length = 0
+    const unknownErr = await server.handle(
+      { jsonrpc: '2.0', id: 2, method: 'run' },
+      {
+        setupContext() {
+          throw new Error('db connection string')
+        },
+      }
+    )
+    expect(unknownErr).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+    expect(observed).toEqual([
+      'first:db connection string',
+      'second:db connection string',
+    ])
+
+    // setupContext throwing on Notification returns undefined
+    expect(
+      await server.handle(
+        { jsonrpc: '2.0', method: 'run' },
+        {
+          setupContext() {
+            throw new JsonRpcError(-32001, 'Unauthorized')
+          },
+        }
+      )
+    ).toBeUndefined()
+
+    // onAfter throwing JsonRpcError routes to onError, skips ctx.after, and returns error
+    observed.length = 0
+    afterTaskRan = false
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'run',
+        params: { mode: 'fail-after-rpc' },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 3,
+      error: { code: -32040, message: 'After rejected' },
+    })
+    expect(observed).toEqual(['first:After rejected', 'second:After rejected'])
+    expect(afterTaskRan).toBe(false)
+
+    // onAfter throwing unexpected Error masks to -32603
+    observed.length = 0
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'run',
+        params: { mode: 'fail-after-unknown' },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 4,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+    expect(observed).toEqual([
+      'first:secret after failure',
+      'second:secret after failure',
+    ])
   })
 })

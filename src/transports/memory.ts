@@ -81,10 +81,14 @@ export function createMemoryDuplexPair(): [DuplexTransport, DuplexTransport] {
     stateB.messageHandlers.clear()
 
     for (const handler of closeHandlersA) {
-      handler(reason)
+      try {
+        handler(reason)
+      } catch {}
     }
     for (const handler of closeHandlersB) {
-      handler(reason)
+      try {
+        handler(reason)
+      } catch {}
     }
   }
 
@@ -102,8 +106,10 @@ export function createMemoryDuplexPair(): [DuplexTransport, DuplexTransport] {
         if (peer.closed) {
           return
         }
-        for (const handler of peer.messageHandlers) {
-          handler(message)
+        for (const handler of [...peer.messageHandlers]) {
+          try {
+            handler(message)
+          } catch {}
         }
       })
       return Promise.resolve()

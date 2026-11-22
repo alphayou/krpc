@@ -480,4 +480,78 @@ describe('streamTransport', () => {
     )
     await transport.close()
   })
+
+  test('handles truncated Content-Length at EOF, trailing NDJSON without newline at EOF, and throwing listeners', async () => {
+    // 1. Truncated Content-Length payload at EOF closes with KrpcTransportError
+    const clSource = createManualReadable()
+    const clSink = createSinkWritable()
+    const clTransport = streamTransport({
+      readable: clSource.readable,
+      writable: clSink.writable,
+      framing: 'content-length',
+    })
+    const clCloseReason = new Promise<unknown>((resolve) => {
+      clTransport.onClose((reason) => resolve(reason))
+    })
+    clSource.push(encoder.encode('Content-Length: 20\r\n\r\n{"partial":true'))
+    clSource.end()
+    expect(await clCloseReason).toBeInstanceOf(KrpcTransportError)
+
+    // 2. Trailing NDJSON line without final newline at EOF is delivered before close
+    const ndSource = createManualReadable()
+    const ndSink = createSinkWritable()
+    const ndTransport = streamTransport({
+      readable: ndSource.readable,
+      writable: ndSink.writable,
+      framing: 'ndjson',
+    })
+    const ndEvents: string[] = []
+    const ndClosed = new Promise<void>((resolve) => {
+      ndTransport.onMessage((msg) => ndEvents.push(`msg:${msg}`))
+      ndTransport.onClose((reason) => {
+        ndEvents.push(`close:${String(reason)}`)
+        resolve()
+      })
+    })
+    ndSource.push(encoder.encode('{"first":1}\n{"trailing":2}'))
+    ndSource.end()
+    await ndClosed
+    expect(ndEvents).toEqual([
+      'msg:{"first":1}',
+      'msg:{"trailing":2}',
+      'close:undefined',
+    ])
+
+    // 3. Throwing onMessage & onClose listeners do not crash the read loop or skip sibling listeners
+    const resilientSource = createManualReadable()
+    const resilientSink = createSinkWritable()
+    const resilient = streamTransport({
+      readable: resilientSource.readable,
+      writable: resilientSink.writable,
+      framing: 'ndjson',
+    })
+    const received: string[] = []
+    let siblingClosed = 0
+    const allDone = new Promise<void>((resolve) => {
+      resilient.onMessage(() => {
+        throw new Error('listener crash')
+      })
+      resilient.onMessage((msg) => {
+        received.push(msg)
+      })
+      resilient.onClose(() => {
+        throw new Error('close listener crash')
+      })
+      resilient.onClose(() => {
+        siblingClosed++
+        resolve()
+      })
+    })
+    resilientSource.push(encoder.encode('{"a":1}\n{"b":2}\n'))
+    resilientSource.push(encoder.encode('{"c":3}\n'))
+    resilientSource.end()
+    await allDone
+    expect(received).toEqual(['{"a":1}', '{"b":2}', '{"c":3}'])
+    expect(siblingClosed).toBe(1)
+  })
 })

@@ -54,13 +54,29 @@ export type RpcProxy<S> =
             : never
       }
 
+function isNonRpcProp(prop: string): boolean {
+  switch (prop) {
+    case 'then':
+    case 'toJSON':
+    case '__proto__':
+    case 'constructor':
+    case 'prototype':
+    case 'toString':
+    case 'valueOf':
+    case 'hasOwnProperty':
+      return true
+    default:
+      return false
+  }
+}
+
 function buildProxyNode(
   call: (...args: unknown[]) => Promise<unknown>,
   path: string
 ): unknown {
   return new Proxy(() => {}, {
     get(_target, prop) {
-      if (typeof prop === 'symbol' || prop === 'then' || prop === 'toJSON') {
+      if (typeof prop === 'symbol' || isNonRpcProp(prop)) {
         return undefined
       }
       return buildProxyNode(call, path ? `${path}.${prop}` : prop)

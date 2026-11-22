@@ -1,5 +1,5 @@
 import { KrpcTransportError } from '../protocol/errors'
-import { isJsonRpcResponse } from '../protocol/guards'
+import { isJsonRpcErrorResponse, isJsonRpcResponse } from '../protocol/guards'
 import type {
   JsonRpcId,
   JsonRpcRequest,
@@ -163,6 +163,19 @@ export function batchTransport(
       (rawResponse) => {
         for (const entry of batch) {
           cleanupAbort(entry)
+        }
+
+        if (isJsonRpcErrorResponse(rawResponse)) {
+          const error = new KrpcTransportError(
+            `JSON-RPC batch error (${rawResponse.error.code}): ${rawResponse.error.message}`
+          )
+          for (const entry of batch) {
+            if (!entry.settled) {
+              entry.settled = true
+              entry.reject(error)
+            }
+          }
+          return
         }
 
         if (requestCount === 0) {

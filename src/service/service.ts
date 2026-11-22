@@ -37,19 +37,34 @@ function hasHooks(layer: ServiceHookLayer): boolean {
   )
 }
 
+function setOwn<T>(obj: Record<string, T>, key: string, value: T): void {
+  if (key === '__proto__') {
+    Object.defineProperty(obj, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    })
+  } else {
+    obj[key] = value
+  }
+}
+
 function attachHooks(tree: ServiceTree, layer: ServiceHookLayer): ServiceTree {
   const attach = hasHooks(layer)
   const cloned: Record<string, MethodDef | NotifyDef | ServiceTree> = {}
 
   for (const [key, entry] of Object.entries(tree)) {
     if (isMethodDef(entry)) {
-      cloned[key] = attach
-        ? { ...entry, hooks: [layer, ...entry.hooks] }
-        : { ...entry }
+      setOwn(
+        cloned,
+        key,
+        attach ? { ...entry, hooks: [layer, ...entry.hooks] } : { ...entry }
+      )
     } else if (isNotifyDef(entry)) {
-      cloned[key] = entry
+      setOwn(cloned, key, entry)
     } else if (isPlainObject(entry)) {
-      cloned[key] = attachHooks(entry as ServiceTree, layer)
+      setOwn(cloned, key, attachHooks(entry as ServiceTree, layer))
     }
   }
 

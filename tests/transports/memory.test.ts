@@ -205,4 +205,37 @@ describe('createMemoryDuplexPair', () => {
     expect(lateNotified).toBe(true)
     expect(lateCancelled).toBe(false)
   })
+
+  test('isolates throwing onMessage and onClose listeners across both endpoints', async () => {
+    const [a, b] = createMemoryDuplexPair()
+    const received: string[] = []
+    let aSiblingClosed = 0
+    let bSiblingClosed = 0
+
+    b.onMessage(() => {
+      throw new Error('msg boom')
+    })
+    b.onMessage((msg) => received.push(msg))
+
+    a.onClose(() => {
+      throw new Error('a close boom')
+    })
+    a.onClose(() => {
+      aSiblingClosed++
+    })
+    b.onClose(() => {
+      throw new Error('b close boom')
+    })
+    b.onClose(() => {
+      bSiblingClosed++
+    })
+
+    await a.send('hello')
+    await Promise.resolve()
+    expect(received).toEqual(['hello'])
+
+    a.close()
+    expect(aSiblingClosed).toBe(1)
+    expect(bSiblingClosed).toBe(1)
+  })
 })

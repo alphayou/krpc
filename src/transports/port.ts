@@ -79,7 +79,11 @@ export function portTransport(port: MessagePortLike): DuplexTransport {
     closeHandlers.clear()
     messageHandlers.clear()
     for (const handler of handlers) {
-      handler(reason)
+      try {
+        handler(reason)
+      } catch {
+        // Isolate close listener exceptions from port cleanup.
+      }
     }
   }
 
@@ -91,8 +95,12 @@ export function portTransport(port: MessagePortLike): DuplexTransport {
     if (message === undefined) {
       return
     }
-    for (const handler of messageHandlers) {
-      handler(message)
+    for (const handler of [...messageHandlers]) {
+      try {
+        handler(message)
+      } catch {
+        // Isolate listener exceptions so sibling listeners still receive frames.
+      }
     }
   }
 

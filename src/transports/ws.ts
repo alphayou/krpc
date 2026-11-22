@@ -118,8 +118,12 @@ export function wsTransport(socket: WebSocketLike): DuplexTransport {
     if (closed) {
       return
     }
-    for (const handler of messageHandlers) {
-      handler(message)
+    for (const handler of [...messageHandlers]) {
+      try {
+        handler(message)
+      } catch {
+        // Isolate listener exceptions so sibling listeners still receive frames.
+      }
     }
   }
 
@@ -150,7 +154,11 @@ export function wsTransport(socket: WebSocketLike): DuplexTransport {
     closeHandlers.clear()
     messageHandlers.clear()
     for (const handler of handlers) {
-      handler(reason)
+      try {
+        handler(reason)
+      } catch {
+        // Isolate close listener exceptions from socket cleanup.
+      }
     }
   }
 
@@ -299,7 +307,11 @@ export function createWsServerTransport(
     closeHandlers.clear()
     messageHandlers.clear()
     for (const handler of handlers) {
-      handler(reason)
+      try {
+        handler(reason)
+      } catch {
+        // Isolate close listener exceptions from socket cleanup.
+      }
     }
   }
 
@@ -362,8 +374,12 @@ export function createWsServerTransport(
         return
       }
       const message = decodeWsMessage(data)
-      for (const handler of messageHandlers) {
-        handler(message)
+      for (const handler of [...messageHandlers]) {
+        try {
+          handler(message)
+        } catch {
+          // Isolate listener exceptions so sibling listeners still receive frames.
+        }
       }
     },
     handleClose(reason?: unknown): void {

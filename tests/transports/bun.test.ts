@@ -10,6 +10,7 @@ import {
   defineMethod,
   defineNotify,
   defineService,
+  JsonRpcError,
   onBefore,
   type ServerConnection,
 } from '../../src/index'
@@ -328,5 +329,140 @@ describe('createBunHandler', () => {
 
     // Sanity check createHttpHandler remains independently composable
     expect(typeof createHttpHandler(rpcServer)).toBe('function')
+  })
+
+  test('handles throwing id(), query params with path filter, non-GET upgrade headers, and throwing setupContext', async () => {
+    const { app } = createTestApp()
+    const rpcServer = createServer(app)
+
+    // 1. Sync & async throwing id(req) returns 500 without invoking srv.upgrade
+    let upgradeCalled = false
+    const syncThrowHandler = createBunHandler(rpcServer, {
+      path: '/rpc',
+      id() {
+        throw new Error('sync id crash')
+      },
+    })
+    const syncRes = await syncThrowHandler.fetch(
+      new Request('http://localhost/rpc?token=abc', {
+        method: 'GET',
+        headers: { upgrade: 'websocket' },
+      }),
+      {
+        upgrade() {
+          upgradeCalled = true
+          return true
+        },
+      }
+    )
+    expect(syncRes?.status).toBe(500)
+    expect(await syncRes?.text()).toBe('Internal Server Error')
+    expect(upgradeCalled).toBe(false)
+
+    const asyncRejectHandler = createBunHandler(rpcServer, {
+      path: '/rpc',
+      async id() {
+        throw new Error('async id crash')
+      },
+    })
+    const asyncRes = await asyncRejectHandler.fetch(
+      new Request('http://localhost/rpc?token=abc', {
+        method: 'GET',
+        headers: { upgrade: 'websocket' },
+      }),
+      {
+        upgrade() {
+          upgradeCalled = true
+          return true
+        },
+      }
+    )
+    expect(asyncRes?.status).toBe(500)
+    expect(upgradeCalled).toBe(false)
+
+    // 2. Query params alongside path: '/rpc' match cleanly for HTTP POST and non-GET upgrade gets 405
+    const pathHandler = createBunHandler(rpcServer, {
+      path: '/rpc',
+      setupContext(_ctx, req) {
+        if (new URL(req.url).searchParams.get('fail') === 'auth') {
+          throw new JsonRpcError(-32001, 'Denied')
+        }
+        if (new URL(req.url).searchParams.get('fail') === 'boom') {
+          throw new Error('sensitive')
+        }
+      },
+    })
+
+    const queryPost = await pathHandler.fetch(
+      new Request('http://localhost/rpc?token=abc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      }),
+      { upgrade: () => true }
+    )
+    expect(queryPost?.status).toBe(200)
+    expect(await queryPost?.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { pong: true, clientId: null, auth: null },
+    })
+
+    const putUpgrade = await pathHandler.fetch(
+      new Request('http://localhost/rpc?token=abc', {
+        method: 'PUT',
+        headers: { upgrade: 'websocket' },
+      }),
+      {
+        upgrade() {
+          upgradeCalled = true
+          return true
+        },
+      }
+    )
+    expect(putUpgrade?.status).toBe(405)
+    expect(upgradeCalled).toBe(false)
+
+    // 3. Throwing setupContext produces clean JSON-RPC error responses on HTTP and WS
+    const httpAuthFail = await pathHandler.fetch(
+      new Request('http://localhost/rpc?fail=auth', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' }),
+      }),
+      { upgrade: () => true }
+    )
+    expect(httpAuthFail?.status).toBe(200)
+    expect(await httpAuthFail?.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: { code: -32001, message: 'Denied' },
+    })
+
+    const wsSent: string[] = []
+    const mockWs = {
+      data: {
+        id: 'w1',
+        req: new Request('http://localhost/rpc?fail=boom'),
+      },
+      send(data: string) {
+        wsSent.push(data)
+      },
+      close() {},
+    }
+    pathHandler.websocket.open(mockWs)
+    pathHandler.websocket.message(
+      mockWs,
+      JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'ping' })
+    )
+    await Bun.sleep(10)
+    expect(wsSent.map((frame) => JSON.parse(frame))).toEqual([
+      {
+        jsonrpc: '2.0',
+        id: 3,
+        error: { code: -32603, message: 'Internal error' },
+      },
+    ])
+    pathHandler.websocket.close(mockWs, 1000, 'bye')
   })
 })

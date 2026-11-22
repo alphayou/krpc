@@ -504,16 +504,77 @@ describe('batchTransport', () => {
     await expect(d1).rejects.toBeInstanceOf(KrpcTransportError)
     expect(await d2).toEqual({ jsonrpc: '2.0', id: 2, result: 'ok' })
 
-    // Non-array response for mixed batch with request + notification
-    const nonArray = batchTransport(async () => ({
+    // Single JSON-RPC error object (e.g. -32600) rejects ALL queued callers in the batch
+    const batchError = batchTransport(async () => ({
       jsonrpc: '2.0',
       id: null,
-      error: { code: -32600, message: 'Invalid Request' },
+      error: { code: -32600, message: 'Batch size exceeds maximum of 1' },
+    }))
+    const [errReqRes, errNotifRes] = await Promise.allSettled([
+      batchError({ jsonrpc: '2.0', id: 1, method: 'a' }),
+      batchError({ jsonrpc: '2.0', method: 'notify' }),
+    ])
+    expect(errReqRes.status).toBe('rejected')
+    expect(errNotifRes.status).toBe('rejected')
+    if (errReqRes.status === 'rejected') {
+      expect(errReqRes.reason).toBeInstanceOf(KrpcTransportError)
+      expect((errReqRes.reason as Error).message).toBe(
+        'JSON-RPC batch error (-32600): Batch size exceeds maximum of 1'
+      )
+    }
+    if (errNotifRes.status === 'rejected') {
+      expect(errNotifRes.reason).toBeInstanceOf(KrpcTransportError)
+    }
+
+    // All-notification batch rejected with single JSON-RPC error object also rejects all callers
+    const notifOnlyErr = batchTransport(async () => ({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32600, message: 'Batch rejected' },
+    }))
+    const [nErr1, nErr2] = await Promise.allSettled([
+      notifOnlyErr({ jsonrpc: '2.0', method: 'log' }),
+      notifOnlyErr({ jsonrpc: '2.0', method: 'log' }),
+    ])
+    expect(nErr1.status).toBe('rejected')
+    expect(nErr2.status).toBe('rejected')
+    if (nErr1.status === 'rejected') {
+      expect(nErr1.reason).toBeInstanceOf(KrpcTransportError)
+    }
+
+    // Non-array non-error response for mixed batch rejects requests and resolves notifications
+    const nonArray = batchTransport(async () => ({
+      jsonrpc: '2.0',
+      id: 1,
+      result: 'unexpected-single',
     }))
     const naReq = nonArray({ jsonrpc: '2.0', id: 1, method: 'a' })
     const naNotif = nonArray({ jsonrpc: '2.0', method: 'notify' })
     await expect(naReq).rejects.toBeInstanceOf(KrpcTransportError)
     expect(await naNotif).toBeUndefined()
+  })
+
+  test('cleanly rejects all queued callers when batch exceeds server maxBatchSize', async () => {
+    const app = defineService(() => ({
+      echo: defineMethod(({ n }: { n: number }) => n),
+    }))
+    const server = createServer(app, { maxBatchSize: 2 })
+    const client = createClient<typeof app>(
+      batchTransport(createMemoryTransport(server))
+    )
+
+    const results = await Promise.allSettled([
+      client.call('echo', { n: 1 }),
+      client.call('echo', { n: 2 }),
+      client.call('echo', { n: 3 }),
+    ])
+    for (const outcome of results) {
+      expect(outcome.status).toBe('rejected')
+      if (outcome.status === 'rejected') {
+        expect(outcome.reason).toBeInstanceOf(KrpcTransportError)
+        expect((outcome.reason as Error).message).toContain('-32600')
+      }
+    }
   })
 
   test('integrates seamlessly with createClient and createMemoryTransport', async () => {

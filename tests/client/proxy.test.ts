@@ -74,4 +74,30 @@ describe('createProxy', () => {
       (rpc as unknown as Record<symbol, unknown>)[Symbol.toStringTag]
     ).toBeUndefined()
   })
+
+  it('guards Object.prototype properties without triggering RPC calls', () => {
+    let transportCalls = 0
+    const client = createClient<App>(async () => {
+      transportCalls++
+      return undefined
+    })
+    const rpc = createProxy(client)
+    const rawRoot = rpc as unknown as Record<string, unknown>
+    const rawNested = rpc.math as unknown as Record<string, unknown>
+
+    for (const key of [
+      '__proto__',
+      'constructor',
+      'prototype',
+      'toString',
+      'valueOf',
+      'hasOwnProperty',
+    ]) {
+      expect(rawRoot[key]).toBeUndefined()
+      expect(rawNested[key]).toBeUndefined()
+    }
+
+    expect(() => String(rpc)).toThrow(TypeError)
+    expect(transportCalls).toBe(0)
+  })
 })

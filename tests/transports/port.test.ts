@@ -222,6 +222,35 @@ describe('portTransport (unit)', () => {
     expect(port.listenerCount('message')).toBe(0)
     expect(port.listenerCount('close')).toBe(0)
   })
+
+  test('isolates throwing onMessage and onClose listeners without breaking sibling listeners or port.close()', () => {
+    const port = new MockPort()
+    const transport = portTransport(port)
+
+    const received: string[] = []
+    transport.onMessage(() => {
+      throw new Error('bad message listener')
+    })
+    transport.onMessage((msg) => {
+      received.push(msg)
+    })
+
+    port.emit('message', { data: 'first' })
+    port.emit('message', { data: 'second' })
+    expect(received).toEqual(['first', 'second'])
+
+    let siblingClosed = 0
+    transport.onClose(() => {
+      throw new Error('bad close listener')
+    })
+    transport.onClose(() => {
+      siblingClosed++
+    })
+
+    transport.close()
+    expect(siblingClosed).toBe(1)
+    expect(port.closedCount).toBe(1)
+  })
 })
 
 describe('portTransport (real Web Standard MessageChannel)', () => {

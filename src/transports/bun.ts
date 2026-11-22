@@ -114,7 +114,14 @@ export function createBunHandler<S extends ServiceTree>(
         req.method === 'GET' &&
         req.headers.get('upgrade')?.toLowerCase() === 'websocket'
       ) {
-        const clientId = await resolveId?.(req)
+        let clientId: string | undefined
+        if (resolveId) {
+          try {
+            clientId = await resolveId(req)
+          } catch {
+            return new Response('Internal Server Error', { status: 500 })
+          }
+        }
         const upgraded = srv.upgrade(req, {
           data: { id: clientId, req } satisfies BunWebSocketData,
         })

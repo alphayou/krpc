@@ -11,6 +11,7 @@ import type { StandardSchemaV1 } from '../../src/protocol/standard-schema'
 import { JSON_RPC_ERROR_CODES } from '../../src/protocol/types'
 import { createServer } from '../../src/server/server'
 import { defineContext } from '../../src/service/context'
+import { onError } from '../../src/service/hooks'
 import { defineMethod, defineNotify } from '../../src/service/method'
 import { defineService } from '../../src/service/service'
 import type { DuplexTransport } from '../../src/transports/types'
@@ -486,5 +487,134 @@ describe('createPeer — full-duplex RPC & push notifications', () => {
     // sendFrameBestEffort catches synchronous transport.send errors cleanly
     inboundHandler?.('{bad json')
     await flakyPeer.close()
+  })
+
+  it('exposes ctx.clientId, silently drops ctx.notify on closed transport, and orders ctx.after strictly after call response', async () => {
+    const errors: string[] = []
+    let notifyAfterCloseResult: boolean | undefined
+    let releaseHandler: (() => void) | undefined
+
+    const app = defineService(() => {
+      onError((err) => {
+        errors.push(err instanceof Error ? err.message : String(err))
+      })
+
+      const done = defineNotify<{ jobId: string }>()
+
+      const whoami = defineMethod((_, ctx) => ({
+        clientId: ctx.clientId ?? null,
+        canNotify: ctx.canNotify,
+      }))
+
+      const startEarly = defineMethod(({ jobId }: { jobId: string }, ctx) => {
+        ctx.after(async () => {
+          await ctx.notify(done, { jobId })
+        })
+        return { accepted: jobId }
+      })
+
+      const slowAfter = defineMethod(({ jobId }: { jobId: string }, ctx) => {
+        ctx.after(async () => {
+          await new Promise((r) => setTimeout(r, 30))
+          await ctx.notify(done, { jobId })
+        })
+        return { accepted: jobId }
+      })
+
+      const failAfter = defineMethod((_, ctx) => {
+        ctx.after(async () => {
+          throw new Error('peer-after-boom')
+        })
+        return 'replied'
+      })
+
+      const notifyAfterClose = defineMethod(async (_, ctx) => {
+        await new Promise<void>((resolve) => {
+          releaseHandler = resolve
+        })
+        notifyAfterCloseResult = await ctx.notify(done, { jobId: 'late' })
+        return 'finished'
+      })
+
+      return {
+        done,
+        whoami,
+        startEarly,
+        slowAfter,
+        failAfter,
+        notifyAfterClose,
+      }
+    })
+
+    const [clientTransport, serverTransport] = createMockDuplexPair()
+    const serverPeer = createPeer(serverTransport, app, { id: 'peer-42' })
+    const clientPeer = createPeer<typeof app>(clientTransport)
+
+    // 1. ctx.clientId populated from createPeer(..., { id })
+    expect(await clientPeer.call('whoami')).toEqual({
+      ok: true,
+      value: { clientId: 'peer-42', canNotify: true },
+    })
+
+    // 2. ctx.after() delivers call response strictly BEFORE ctx.notify()
+    const order: string[] = []
+    clientPeer.on('done', ({ jobId }) => {
+      order.push(`notify:${jobId}`)
+    })
+
+    const res = await clientPeer.call('startEarly', { jobId: 'p1' })
+    order.push(`response:${res.ok ? res.value.accepted : 'err'}`)
+    await new Promise((r) => setTimeout(r, 15))
+    expect(order).toEqual(['response:p1', 'notify:p1'])
+
+    // 3. Batch also delivers batch response strictly BEFORE ctx.notify()
+    order.length = 0
+    const [b0, b1] = await clientPeer.batch((b) => [
+      b.call('startEarly', { jobId: 'pb1' }),
+      b.call('startEarly', { jobId: 'pb2' }),
+    ])
+    order.push(
+      `batch:${b0.ok ? b0.value.accepted : 'err'},${b1.ok ? b1.value.accepted : 'err'}`
+    )
+    await new Promise((r) => setTimeout(r, 15))
+    expect(order[0]).toBe('batch:pb1,pb2')
+    expect(order).toContain('notify:pb1')
+    expect(order).toContain('notify:pb2')
+
+    // 4. Early reply returns immediately before slow ctx.after finishes
+    order.length = 0
+    const t0 = performance.now()
+    const slowRes = await clientPeer.call('slowAfter', { jobId: 'slow-1' })
+    const elapsed = performance.now() - t0
+    expect(slowRes).toEqual({ ok: true, value: { accepted: 'slow-1' } })
+    expect(elapsed).toBeLessThan(25)
+    expect(order).toEqual([])
+    await new Promise((r) => setTimeout(r, 45))
+    expect(order).toEqual(['notify:slow-1'])
+
+    // 5. Notification calling ctx.after still runs
+    order.length = 0
+    await clientPeer.notify('startEarly', { jobId: 'from-notif' })
+    await new Promise((r) => setTimeout(r, 15))
+    expect(order).toEqual(['notify:from-notif'])
+
+    // 6. Error in ctx.after is caught by onError
+    expect(await clientPeer.call('failAfter')).toEqual({
+      ok: true,
+      value: 'replied',
+    })
+    await new Promise((r) => setTimeout(r, 15))
+    expect(errors).toEqual(['peer-after-boom'])
+
+    // 7. ctx.notify on a closed connection silently drops and returns false (never throws)
+    const inflight = clientPeer
+      .call('notifyAfterClose')
+      .catch(() => 'closed-client')
+    await new Promise((r) => setTimeout(r, 10))
+    await serverPeer.close()
+    releaseHandler?.()
+    await inflight
+    await new Promise((r) => setTimeout(r, 15))
+    expect(notifyAfterCloseResult).toBe(false)
   })
 })

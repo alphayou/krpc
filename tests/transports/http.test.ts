@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test'
+import { createPeer } from '../../src/peer/peer'
 import { defineError, KrpcTransportError } from '../../src/protocol/errors'
 import { createServer } from '../../src/server/server'
 import { defineContext } from '../../src/service/context'
-import { defineMethod } from '../../src/service/method'
+import { onError } from '../../src/service/hooks'
+import { defineMethod, defineNotify } from '../../src/service/method'
 import { defineService } from '../../src/service/service'
 import { createHttpHandler, httpTransport } from '../../src/transports/http'
+import { createMemoryDuplexPair } from '../../src/transports/memory'
 
 const AuthHeader = defineContext<string | null>()
 const NotAllowed = defineError(-32001, 'Not allowed')
@@ -529,5 +532,118 @@ describe('httpTransport unit edge cases', () => {
     }
     expect(bodyAbortErr).not.toBeInstanceOf(KrpcTransportError)
     expect((bodyAbortErr as Error).name).toBe('AbortError')
+  })
+})
+
+describe('createHttpHandler — ctx.after(waitUntil), silent ctx.notify, and HTTP->duplex push', () => {
+  test('silently drops untargeted ctx.notify, pushes targeted ctx.notify to connected clients, and forwards waitUntil for ctx.after', async () => {
+    const timeline: string[] = []
+    const caught: string[] = []
+
+    const app = defineService(() => {
+      onError((err) => {
+        caught.push(err instanceof Error ? err.message : String(err))
+      })
+
+      const done = defineNotify<{ jobId: string }>()
+
+      const enqueue = defineMethod(
+        async (
+          { jobId, targetId }: { jobId: string; targetId?: string },
+          ctx
+        ) => {
+          const selfSent = await ctx.notify(done, { jobId })
+          ctx.after(async () => {
+            timeline.push(`after-start:${jobId}`)
+            await new Promise((r) => setTimeout(r, 25))
+            if (targetId) {
+              await ctx.notify(done, { jobId }, targetId)
+            }
+            timeline.push(`after-end:${jobId}`)
+          })
+          return {
+            accepted: jobId,
+            canNotify: ctx.canNotify,
+            clientId: ctx.clientId ?? null,
+            selfSent,
+          }
+        }
+      )
+
+      const boomAfter = defineMethod((_, ctx) => {
+        ctx.after(async () => {
+          throw new Error('http-after-err')
+        })
+        return 'ok'
+      })
+
+      return { done, enqueue, boomAfter }
+    })
+
+    const server = createServer(app)
+    const waitPromises: Promise<void>[] = []
+    const handler = createHttpHandler(server, {
+      waitUntil: (p) => waitPromises.push(p),
+    })
+
+    // Connect a duplex client under id 'user-1'
+    const [srvTransport, cliTransport] = createMemoryDuplexPair()
+    const conn = server.connect(srvTransport, 'user-1')
+    const duplexClient = createPeer<typeof app>(cliTransport)
+    const pushed: string[] = []
+    duplexClient.on('done', ({ jobId }) => {
+      pushed.push(jobId)
+    })
+
+    // HTTP request replies immediately while ctx.after runs in background & pushes to 'user-1'
+    const t0 = performance.now()
+    const res = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'enqueue',
+          params: { jobId: 'http-job-1', targetId: 'user-1' },
+        }),
+      })
+    )
+    const elapsed = performance.now() - t0
+    expect(res.status).toBe(200)
+    expect(elapsed).toBeLessThan(25)
+    expect(await res.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        accepted: 'http-job-1',
+        canNotify: false,
+        clientId: null,
+        selfSent: false,
+      },
+    })
+    expect(waitPromises).toHaveLength(1)
+
+    await Promise.all(waitPromises)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(timeline).toEqual(['after-start:http-job-1', 'after-end:http-job-1'])
+    expect(pushed).toEqual(['http-job-1'])
+
+    // Error inside ctx.after on HTTP is caught by onError and waitUntil promise resolves cleanly
+    waitPromises.length = 0
+    const errRes = await handler(
+      new Request('http://localhost/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'boomAfter' }),
+      })
+    )
+    expect(errRes.status).toBe(200)
+    expect(await errRes.json()).toEqual({ jsonrpc: '2.0', id: 2, result: 'ok' })
+    await Promise.all(waitPromises)
+    expect(caught).toEqual(['http-after-err'])
+
+    await duplexClient.close()
+    await conn.close()
   })
 })

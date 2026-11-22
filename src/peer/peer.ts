@@ -61,6 +61,8 @@ import type { DuplexTransport } from '../transports/types'
 
 /** Configuration options for `createPeer`. */
 export interface PeerOptions extends ClientOptions, ServerOptions {
+  /** Optional client/connection identifier exposed on `ctx.clientId` for inbound calls. */
+  readonly id?: string
   /** Populate request-scoped context tokens for every inbound RPC invocation. */
   readonly setupContext?: (ctx: RpcContext) => void | Promise<void>
 }
@@ -213,27 +215,48 @@ export function createPeer(
     }
   }
 
-  const sendResponseBestEffort = (payload: JsonRpcResponsePayload): void => {
+  const sendResponseBestEffort = async (
+    payload: JsonRpcResponsePayload
+  ): Promise<void> => {
     if (closed) return
     try {
-      const maybePromise = transport.send(stringifyJsonRpcResponse(payload))
-      if (maybePromise && typeof maybePromise.catch === 'function') {
-        maybePromise.catch(() => {})
-      }
+      await transport.send(stringifyJsonRpcResponse(payload))
     } catch {
       // Transport closed while replying to an inbound frame.
     }
   }
 
   const handleOpts: HandleOptions = {
+    clientId: options.id,
     setupContext: options.setupContext,
     emitNotify(method, params) {
+      if (closed) return false
       const frame: JsonRpcNotification =
         params === undefined
           ? { jsonrpc: '2.0', method }
           : { jsonrpc: '2.0', method, params }
-      return sendFrame(frame)
+      return sendFrame(frame).then(
+        () => true,
+        () => false
+      )
     },
+  }
+
+  const dispatchToServer = async (value: unknown): Promise<void> => {
+    if (!server) return
+    let flushAfter: (() => Promise<void>) | undefined
+    const response = await server.handle(value, {
+      ...handleOpts,
+      onAfterTasks(flush) {
+        flushAfter = flush
+      },
+    })
+    if (response !== undefined) {
+      await sendResponseBestEffort(response)
+    }
+    if (flushAfter) {
+      void flushAfter()
+    }
   }
 
   const dispatchSubscribers = (method: string, params: unknown): void => {
@@ -364,10 +387,7 @@ export function createPeer(
       }
 
       if (server) {
-        const response = await server.handle(value, handleOpts)
-        if (response !== undefined) {
-          sendResponseBestEffort(response)
-        }
+        await dispatchToServer(value)
         return
       }
 
@@ -402,16 +422,13 @@ export function createPeer(
     if (isJsonRpcNotification(value)) {
       dispatchSubscribers(value.method, value.params)
       if (server) {
-        await server.handle(value, handleOpts)
+        await dispatchToServer(value)
       }
       return
     }
 
     if (server) {
-      const response = await server.handle(value, handleOpts)
-      if (response !== undefined) {
-        sendResponseBestEffort(response)
-      }
+      await dispatchToServer(value)
       return
     }
 

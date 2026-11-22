@@ -51,6 +51,11 @@ export interface HttpHandlerOptions {
     ctx: RpcContext,
     req: Request
   ) => void | Promise<void>
+  /**
+   * Keep background `ctx.after(...)` tasks alive after the HTTP `Response` is returned
+   * (e.g. Cloudflare Workers `executionCtx.waitUntil`).
+   */
+  readonly waitUntil?: (promise: Promise<void>) => void
 }
 
 function isAbortError(error: unknown, signal?: AbortSignal): boolean {
@@ -258,6 +263,7 @@ export function createHttpHandler(
   const maxBodySize = options?.maxBodySize ?? DEFAULT_MAX_BODY_SIZE
   assertValidMaxBodySize(maxBodySize)
   const setupContext = options?.setupContext
+  const waitUntil = options?.waitUntil
 
   return async (req: Request): Promise<Response> => {
     if (req.method !== 'POST') {
@@ -288,6 +294,7 @@ export function createHttpHandler(
     const responsePayload = await server.handleRaw(bodyText, {
       signal: req.signal,
       setupContext: setupContext ? (ctx) => setupContext(ctx, req) : undefined,
+      waitUntil,
     })
 
     if (responsePayload === undefined) {

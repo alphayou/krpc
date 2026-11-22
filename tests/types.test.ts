@@ -9,6 +9,7 @@ import type {
   Result,
   StandardRpcError,
 } from '../src/protocol/types'
+import { createServer } from '../src/server/server'
 import { createRpcContext, defineContext } from '../src/service/context'
 import { defineMethod, defineNotify } from '../src/service/method'
 import { defineService } from '../src/service/service'
@@ -69,12 +70,27 @@ const math = defineService(() => {
 const job = defineService(() => {
   const progress = defineNotify<{ jobId: string; percent: number }>()
   const heartbeat = defineNotify()
+  const optional = defineNotify<{ tag?: string } | undefined>()
   const start = defineMethod(async ({ jobId }: { jobId: string }, ctx) => {
-    await ctx.notify(progress, { jobId, percent: 50 })
-    await ctx.notify(heartbeat)
+    const sent1: boolean = await ctx.notify(progress, { jobId, percent: 50 })
+    const sent2: boolean = await ctx.notify(
+      progress,
+      { jobId, percent: 75 },
+      'user-1'
+    )
+    const sent3: boolean = await ctx.notify(heartbeat)
+    const sent4: boolean = await ctx.notify(heartbeat, undefined, 'user-1')
+    const sent5: boolean = await ctx.notify(optional)
+    const sent6: boolean = await ctx.notify(optional, { tag: 'x' }, 'user-1')
+    void [sent1, sent2, sent3, sent4, sent5, sent6]
+    ctx.after(async () => {
+      await ctx.notify(heartbeat)
+    })
+    const cid: string | undefined = ctx.clientId
+    void cid
     return { started: true as const }
   })
-  return { progress, heartbeat, start }
+  return { progress, heartbeat, optional, start }
 })
 
 const app = defineService(() => {
@@ -108,7 +124,9 @@ describe('TypeScript 7 compile-time type gymnastics', () => {
         | 'job.start'
       >
     >(true)
-    assertType<Equal<NotifyNames<App>, 'job.progress' | 'job.heartbeat'>>(true)
+    assertType<
+      Equal<NotifyNames<App>, 'job.progress' | 'job.heartbeat' | 'job.optional'>
+    >(true)
 
     // 2. Standard Schema Input vs Output separation & void/undefined -> null wire normalization
     assertType<
@@ -159,8 +177,64 @@ describe('TypeScript 7 compile-time type gymnastics', () => {
       assertType<Equal<typeof h, Headers | undefined>>(true)
       assertType<Equal<typeof hReq, Headers>>(true)
       assertType<Equal<typeof locale, string>>(true)
+      assertType<Equal<typeof ctx.clientId, string | undefined>>(true)
+
+      const sentVoid = ctx.notify(job.heartbeat)
+      assertType<Equal<typeof sentVoid, Promise<boolean>>>(true)
+      ctx.after(() => {})
+      ctx.after(async () => {})
+
+      // @ts-expect-error void notify requires undefined before target id
+      ctx.notify(job.heartbeat, 'user-1')
+      // @ts-expect-error invalid target id type
+      ctx.notify(job.progress, { jobId: '1', percent: 50 }, 123)
+      // @ts-expect-error invalid payload shape
+      ctx.notify(job.progress, { jobId: 123, percent: 50 })
     }
     void checkContext
+
+    // 4b. Server connection registry & server.notify typing
+    const checkServerRegistry = async (transport: DuplexTransport) => {
+      const server = createServer(app)
+      const conn = server.connect(transport, 'u1')
+      const conn2 = server.connect(transport, {
+        id: 'u2',
+        setupContext(ctx) {
+          assertType<Equal<typeof ctx.clientId, string | undefined>>(true)
+        },
+      })
+      assertType<Equal<typeof conn.id, string>>(true)
+      assertType<Equal<typeof conn2.id, string>>(true)
+
+      const s1 = await server.notify('u1', 'job.progress', {
+        jobId: '1',
+        percent: 50,
+      })
+      const s2 = await server.notify('u1', 'job.heartbeat')
+      const s3 = await server.notify('u1', job.progress, {
+        jobId: '1',
+        percent: 100,
+      })
+      const c1 = await conn.notify('job.heartbeat')
+      const c2 = await conn.notify(job.progress, { jobId: '1', percent: 10 })
+      assertType<Equal<typeof s1, boolean>>(true)
+      assertType<Equal<typeof s2, boolean>>(true)
+      assertType<Equal<typeof s3, boolean>>(true)
+      assertType<Equal<typeof c1, boolean>>(true)
+      assertType<Equal<typeof c2, boolean>>(true)
+
+      // @ts-expect-error unknown notification name
+      await server.notify('u1', 'job.unknown')
+      // @ts-expect-error RPC method is not a notification
+      await server.notify('u1', 'ping')
+      // @ts-expect-error invalid payload shape
+      await server.notify('u1', 'job.progress', { jobId: 1, percent: 50 })
+      // @ts-expect-error void notify rejects params
+      await server.notify('u1', 'job.heartbeat', { extra: 1 })
+      // @ts-expect-error conn.notify rejects unknown notification name
+      await conn.notify('ping')
+    }
+    void checkServerRegistry
 
     // 5. Client call, notify, batch variadic tuples, and createProxy
     const checkClientAndProxy = async (transport: ClientTransport) => {

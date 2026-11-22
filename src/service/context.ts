@@ -1,5 +1,15 @@
 import type { JsonRpcId, JsonRpcParams } from '../protocol/types'
-import type { CallArgs, NotifyDef, ValidRpcParams } from './method'
+import type { NotifyDef, ValidRpcParams } from './method'
+
+/**
+ * Smart argument tuple for `ctx.notify`: omits `params` for `void` notifications,
+ * makes optional params optional, and accepts an optional trailing target `to` client ID.
+ */
+export type NotifyCallArgs<Input> = [Input] extends [void | undefined]
+  ? [] | [params: undefined, to?: string]
+  : undefined extends Input
+    ? [params?: Exclude<Input, undefined>, to?: string]
+    : [params: Input, to?: string]
 
 const CONTEXT_BRAND: unique symbol = /*#__PURE__*/ Symbol.for('krpc.context')
 
@@ -78,13 +88,24 @@ export interface RpcContext {
   readonly id: JsonRpcId | undefined
   /** `true` when invoked as a JSON-RPC Notification (no `id`, no reply). */
   readonly isNotification: boolean
-  /** `true` when the active transport supports outbound `ctx.notify(...)` pushes. */
+  /** Connected client identifier (`server.connect` / `createPeer`), or `undefined` on stateless transports. */
+  readonly clientId: string | undefined
+  /** `true` when the active transport supports direct outbound `ctx.notify(...)` pushes. */
   readonly canNotify: boolean
-  /** Emit a typed outbound Notification declared with `defineNotify`. */
+  /**
+   * Emit a typed outbound Notification declared with `defineNotify`.
+   * Pass an optional trailing `to` client ID to target a connected client by ID.
+   * Resolves to `true` if delivered to at least one active connection, or `false` if silently dropped.
+   */
   notify<Input extends ValidRpcParams>(
     def: NotifyDef<Input, any>,
-    ...args: CallArgs<Input>
-  ): Promise<void>
+    ...args: NotifyCallArgs<Input>
+  ): Promise<boolean>
+  /**
+   * Schedule a background task to run after the RPC response is sent without blocking the reply.
+   * Errors thrown or rejected inside `fn` are caught and forwarded to the method's `onError` hooks.
+   */
+  after(fn: () => void | Promise<void>): void
 }
 
 /** Options used by `createServer` to instantiate a request-scoped `RpcContext`. */
@@ -95,13 +116,20 @@ export interface CreateRpcContextOptions {
   readonly id: JsonRpcId | undefined
   /** Whether the call is a Notification. */
   readonly isNotification: boolean
+  /** Connected client identifier, or `undefined` on stateless transports. */
+  readonly clientId?: string
   /** Optional cancellation signal (defaults to a non-aborted signal). */
   readonly signal?: AbortSignal
-  /** Optional outbound notification dispatcher for full-duplex transports. */
+  /** Whether the active transport supports direct outbound pushes (defaults to `sendNotify !== undefined`). */
+  readonly canNotify?: boolean
+  /** Optional outbound notification dispatcher returning whether at least one active connection received it. */
   readonly sendNotify?: (
     def: NotifyDef<any, any>,
-    params: JsonRpcParams | undefined
-  ) => Promise<void>
+    params: JsonRpcParams | undefined,
+    to?: string
+  ) => Promise<boolean>
+  /** Optional sink invoked when a handler registers a deferred `ctx.after(...)` task. */
+  readonly onAfterTask?: (fn: () => void | Promise<void>) => void
 }
 
 let defaultSignal: AbortSignal | undefined
@@ -114,7 +142,9 @@ function getDefaultSignal(): AbortSignal {
 export function createRpcContext(options: CreateRpcContextOptions): RpcContext {
   let values: Map<symbol, unknown> | undefined
   const signal = options.signal ?? getDefaultSignal()
-  const { method, id, isNotification, sendNotify } = options
+  const { method, id, isNotification, clientId, sendNotify, onAfterTask } =
+    options
+  const canNotify = options.canNotify ?? sendNotify !== undefined
 
   function get<T>(token: ContextTokenWithDefault<T>): T
   function get<T>(token: ContextToken<T>): T | undefined
@@ -150,17 +180,23 @@ export function createRpcContext(options: CreateRpcContextOptions): RpcContext {
     method,
     id,
     isNotification,
-    canNotify: sendNotify !== undefined,
+    clientId,
+    canNotify,
     async notify<Input extends ValidRpcParams>(
       def: NotifyDef<Input, any>,
-      ...args: CallArgs<Input>
-    ): Promise<void> {
+      ...args: NotifyCallArgs<Input>
+    ): Promise<boolean> {
       if (!sendNotify) {
-        throw new Error(
-          'Outbound notifications are not supported by the active transport'
-        )
+        return false
       }
-      await sendNotify(def, args[0] as JsonRpcParams | undefined)
+      return sendNotify(
+        def,
+        args[0] as JsonRpcParams | undefined,
+        args[1] as string | undefined
+      )
+    },
+    after(fn: () => void | Promise<void>): void {
+      onAfterTask?.(fn)
     },
   }
 }

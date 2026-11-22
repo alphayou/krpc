@@ -63,14 +63,25 @@ const job = defineService(() => {
   const done = defineNotify<{ jobId: string }>()
 
   const start = defineMethod(async ({ jobId }: { jobId: string }, ctx) => {
-    if (ctx.canNotify) {
-      await ctx.notify(progress, { jobId, percent: 50 })
-      await ctx.notify(done, { jobId })
-    }
+    await ctx.notify(progress, { jobId, percent: 50 })
+    await ctx.notify(done, { jobId })
     return { started: jobId, locale: ctx.get(Locale) }
   })
 
-  return { progress, done, start }
+  const startEarly = defineMethod(({ jobId }: { jobId: string }, ctx) => {
+    ctx.after(async () => {
+      await ctx.notify(done, { jobId })
+    })
+    return { accepted: jobId, clientId: ctx.clientId ?? null }
+  })
+
+  const notifyTarget = defineMethod(
+    async ({ targetId, jobId }: { targetId: string; jobId: string }, ctx) => {
+      return { delivered: await ctx.notify(done, { jobId }, targetId) }
+    }
+  )
+
+  return { progress, done, start, startEarly, notifyTarget }
 })
 
 const admin = defineService(() => {
@@ -327,5 +338,101 @@ describe('krpc public API end-to-end integration', () => {
 
     await untypedPeer.close()
     await serverPeer.close()
+  })
+
+  it('bridges HTTP requests and WebSocket connections on one RpcServer via server.connect, server.notify, and ctx.after', async () => {
+    interface WsData {
+      bridge?: WsServerTransportBridge
+    }
+
+    const rpcServer = createServer(app)
+    const httpHandler = createHttpHandler(rpcServer)
+
+    const bunServer = Bun.serve<WsData>({
+      port: 0,
+      fetch(req, srv) {
+        const url = new URL(req.url)
+        if (url.pathname === '/ws') {
+          if (srv.upgrade(req, { data: {} })) {
+            return undefined
+          }
+          return new Response('Upgrade required', { status: 426 })
+        }
+        return httpHandler(req)
+      },
+      websocket: {
+        open(ws) {
+          const bridge = createWsServerTransport(ws)
+          ws.data.bridge = bridge
+          rpcServer.connect(bridge.transport, 'user-1')
+        },
+        message(ws, data) {
+          ws.data.bridge?.handleMessage(data)
+        },
+        close(ws) {
+          ws.data.bridge?.handleClose()
+        },
+      },
+    })
+
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${bunServer.port}/ws`)
+      const wsClient = createPeer<App>(wsTransport(ws))
+      const httpClient = createClient<App>(
+        httpTransport(`http://127.0.0.1:${bunServer.port}/rpc`)
+      )
+
+      const events: string[] = []
+      wsClient.on('job.done', ({ jobId }) => {
+        events.push(`done:${jobId}`)
+      })
+
+      // 1. Early reply over real WebSocket via server.connect guarantees response before notify
+      const earlyRes = await wsClient.call('job.startEarly', {
+        jobId: 'ws-early',
+      })
+      events.push(
+        `reply:${earlyRes.ok ? `${earlyRes.value.accepted}:${earlyRes.value.clientId}` : 'err'}`
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      expect(events).toEqual(['reply:ws-early:user-1', 'done:ws-early'])
+
+      // 2. HTTP call silently drops untargeted ctx.notify and delivers targeted ctx.notify to WS user-1
+      expect(
+        await httpClient.call('job.start', { jobId: 'http-silent' })
+      ).toEqual({
+        ok: true,
+        value: { started: 'http-silent', locale: 'en-US' },
+      })
+      expect(
+        await httpClient.call('job.notifyTarget', {
+          targetId: 'user-1',
+          jobId: 'from-http',
+        })
+      ).toEqual({ ok: true, value: { delivered: true } })
+      expect(
+        await httpClient.call('job.notifyTarget', {
+          targetId: 'offline-user',
+          jobId: 'missed',
+        })
+      ).toEqual({ ok: true, value: { delivered: false } })
+      await new Promise((r) => setTimeout(r, 20))
+      expect(events).toEqual([
+        'reply:ws-early:user-1',
+        'done:ws-early',
+        'done:from-http',
+      ])
+
+      // 3. Direct server.notify pushes to WS user-1
+      expect(
+        await rpcServer.notify('user-1', 'job.done', { jobId: 'direct' })
+      ).toBe(true)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(events).toContain('done:direct')
+
+      await wsClient.close()
+    } finally {
+      bunServer.stop(true)
+    }
   })
 })

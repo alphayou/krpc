@@ -79,6 +79,7 @@ export {
   type ContextToken,
   type ContextTokenWithDefault,
   type CreateRpcContextOptions,
+  type NotifyCallArgs,
   type RpcContext,
 } from './service/context'
 
@@ -137,6 +138,8 @@ export {
   type HandleOptions,
   type ResolvedNotify,
   type RpcServer,
+  type ServerConnectOptions,
+  type ServerConnection,
   type ServerOptions,
 } from './server/server'
 

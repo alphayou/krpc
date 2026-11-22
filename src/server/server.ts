@@ -5,6 +5,7 @@ import {
   isJsonRpcError,
   isRpcErrorValue,
   methodNotFound,
+  stringifyJsonRpcResponse,
   type JsonRpcError,
 } from '../protocol/errors'
 import {
@@ -20,14 +21,23 @@ import type {
   JsonRpcErrorObject,
   JsonRpcErrorResponse,
   JsonRpcId,
+  JsonRpcNotification,
   JsonRpcParams,
   JsonRpcResponse,
   JsonRpcResponsePayload,
 } from '../protocol/types'
 import { createRpcContext, type RpcContext } from '../service/context'
 import type { AfterHook, BeforeHook, ErrorHook } from '../service/hooks'
-import type { MethodDef, NotifyDef } from '../service/method'
+import {
+  isNotifyDef,
+  type CallArgs,
+  type MethodDef,
+  type NotifyDef,
+  type ValidRpcParams,
+} from '../service/method'
 import { compileService, type ServiceTree } from '../service/service'
+import type { InferNotify, NotifyNames } from '../service/types'
+import type { DuplexTransport } from '../transports/types'
 
 /** Configuration options for `createServer`. */
 export interface ServerOptions {
@@ -48,13 +58,54 @@ export interface ServerOptions {
 export interface HandleOptions {
   /** Request-level cancellation signal forwarded to `ctx.signal`. */
   readonly signal?: AbortSignal
+  /** Connection identifier forwarded to `ctx.clientId` (set by `server.connect` or `createPeer`). */
+  readonly clientId?: string
   /** Populate request-scoped context tokens before hooks and handlers run. */
   readonly setupContext?: (ctx: RpcContext) => void | Promise<void>
-  /** Outbound notification emitter wired by full-duplex transports (e.g. `createPeer`). */
+  /**
+   * Outbound notification emitter wired by full-duplex transports (e.g. `createPeer`, `server.connect`).
+   * Returning `false` signals that the notification was dropped (e.g. transport closed).
+   */
   readonly emitNotify?: (
     method: string,
     params?: JsonRpcParams
-  ) => void | Promise<void>
+  ) => boolean | void | Promise<boolean | void>
+  /**
+   * Hook for full-duplex transports to defer `ctx.after(...)` execution until strictly after
+   * the serialized response frame has been sent.
+   */
+  readonly onAfterTasks?: (flush: () => Promise<void>) => void
+  /**
+   * Lifecycle hook for stateless transports (e.g. Cloudflare Workers `ctx.waitUntil`)
+   * receiving the background promise for `ctx.after(...)` tasks when `onAfterTasks` is not used.
+   */
+  readonly waitUntil?: (promise: Promise<void>) => void
+}
+
+/** Configuration options for `server.connect`. */
+export interface ServerConnectOptions {
+  /** Connection identifier exposed on `ctx.clientId` and targeted by `server.notify` (auto-generated if omitted). */
+  readonly id?: string
+  /** Populate request-scoped context tokens for every inbound RPC invocation on this connection. */
+  readonly setupContext?: (ctx: RpcContext) => void | Promise<void>
+}
+
+/** Active full-duplex connection registered via `server.connect`. */
+export interface ServerConnection<S extends ServiceTree = ServiceTree> {
+  /** Connection identifier (explicitly supplied or auto-generated `c1`, `c2`, ...). */
+  readonly id: string
+  /** Push a typed outbound notification to this specific connection by `NotifyDef` contract. Returns `false` if closed. */
+  notify<Input extends ValidRpcParams>(
+    def: NotifyDef<Input, any>,
+    ...args: CallArgs<Input>
+  ): Promise<boolean>
+  /** Push a typed outbound notification to this specific connection by dot-separated name. Returns `false` if closed. */
+  notify<K extends NotifyNames<S>>(
+    name: K,
+    ...args: CallArgs<InferNotify<S, K>>
+  ): Promise<boolean>
+  /** Close the underlying transport and unregister this connection from the server. */
+  close(): Promise<void>
 }
 
 /** Resolved outbound notification entry returned by `server.resolveNotify`. */
@@ -81,6 +132,23 @@ export interface RpcServer<S extends ServiceTree = ServiceTree> {
   ): Promise<JsonRpcResponsePayload | undefined>
   /** Look up a registered outbound notification by its `NotifyDef` reference or dot-separated name. */
   resolveNotify(defOrName: NotifyDef | string): ResolvedNotify | undefined
+  /** Attach a full-duplex transport to this server, routing inbound frames and registering it for targeted notifications. */
+  connect(
+    transport: DuplexTransport,
+    options?: string | ServerConnectOptions
+  ): ServerConnection<S>
+  /** Push a typed outbound notification to all active connections registered under `id` by `NotifyDef` contract. */
+  notify<Input extends ValidRpcParams>(
+    id: string,
+    def: NotifyDef<Input, any>,
+    ...args: CallArgs<Input>
+  ): Promise<boolean>
+  /** Push a typed outbound notification to all active connections registered under `id` by dot-separated name. */
+  notify<K extends NotifyNames<S>>(
+    id: string,
+    name: K,
+    ...args: CallArgs<InferNotify<S, K>>
+  ): Promise<boolean>
 }
 
 function errorResponse(
@@ -224,6 +292,34 @@ function prepareMethods(
   return prepared
 }
 
+interface InternalConnection {
+  sendRaw(serialized: string): Promise<boolean>
+}
+
+function serializeNotification(
+  method: string,
+  params: JsonRpcParams | undefined
+): string {
+  const frame: JsonRpcNotification =
+    params === undefined
+      ? { jsonrpc: '2.0', method }
+      : { jsonrpc: '2.0', method, params }
+  return JSON.stringify(frame)
+}
+
+function finalizeAfterTasks(
+  flush: (() => Promise<void>) | undefined,
+  handleOptions?: HandleOptions
+): void {
+  if (!flush) return
+  if (handleOptions?.onAfterTasks) {
+    handleOptions.onAfterTasks(flush)
+    return
+  }
+  const promise = Promise.resolve().then(flush)
+  handleOptions?.waitUntil?.(promise)
+}
+
 /** Create a JSON-RPC 2.0 server from a `defineService` service tree. */
 export function createServer<S extends ServiceTree>(
   service: S,
@@ -236,6 +332,8 @@ export function createServer<S extends ServiceTree>(
 
   const compiled = compileService(service)
   const preparedMethods = prepareMethods(compiled.methods)
+  let connections: Map<string, Set<InternalConnection>> | undefined
+  let nextConnSeq = 0
 
   const resolveNotify = (
     defOrName: NotifyDef | string
@@ -246,6 +344,68 @@ export function createServer<S extends ServiceTree>(
     }
     const name = compiled.notifyNames.get(defOrName)
     return name ? { name, def: defOrName } : undefined
+  }
+
+  const validateAndResolveNotify = async (
+    target: NotifyDef | string,
+    params: JsonRpcParams | undefined
+  ): Promise<{ name: string; params: JsonRpcParams | undefined }> => {
+    let name: string
+    let def: NotifyDef | undefined
+
+    if (isNotifyDef(target)) {
+      const resolvedName = compiled.notifyNames.get(target)
+      if (!resolvedName) {
+        throw new Error(
+          'Notification definition is not registered in this service'
+        )
+      }
+      name = resolvedName
+      def = target
+    } else {
+      name = target
+      def = compiled.notifiesByName.get(target)
+    }
+
+    if (def?.schema) {
+      const validated = await validateStandardSchema(def.schema, params)
+      if (!validated.ok) {
+        throw new Error(
+          `Invalid outbound notification params for "${name}": ${validated.issues.map((i) => i.message).join(', ')}`
+        )
+      }
+      return { name, params: validated.value as JsonRpcParams | undefined }
+    }
+
+    return { name, params }
+  }
+
+  const dispatchToClient = async (
+    id: string,
+    method: string,
+    params: JsonRpcParams | undefined
+  ): Promise<boolean> => {
+    const targets = connections?.get(id)
+    if (!targets || targets.size === 0) {
+      return false
+    }
+    const serialized = serializeNotification(method, params)
+    const results = await Promise.all(
+      [...targets].map((conn) => conn.sendRaw(serialized))
+    )
+    return results.some(Boolean)
+  }
+
+  const sendNotifyWithoutEmit = async (
+    def: NotifyDef,
+    params: JsonRpcParams | undefined,
+    to?: string
+  ): Promise<boolean> => {
+    const resolved = await validateAndResolveNotify(def, params)
+    if (to !== undefined) {
+      return dispatchToClient(to, resolved.name, resolved.params)
+    }
+    return false
   }
 
   const runErrorHooks = async (
@@ -264,7 +424,8 @@ export function createServer<S extends ServiceTree>(
 
   const handleSingle = async (
     item: unknown,
-    handleOptions?: HandleOptions
+    handleOptions?: HandleOptions,
+    collectAfter?: (flush: () => Promise<void>) => void
   ): Promise<JsonRpcResponse | undefined> => {
     const isReq = isJsonRpcRequest(item)
     const isNotif = !isReq && isJsonRpcNotification(item)
@@ -295,33 +456,36 @@ export function createServer<S extends ServiceTree>(
 
     const emitNotify = handleOptions?.emitNotify
     const sendNotify = emitNotify
-      ? async (def: NotifyDef, params: JsonRpcParams | undefined) => {
-          const name = compiled.notifyNames.get(def)
-          if (!name) {
-            throw new Error(
-              'Notification definition is not registered in this service'
-            )
+      ? async (
+          def: NotifyDef,
+          params: JsonRpcParams | undefined,
+          to?: string
+        ): Promise<boolean> => {
+          const resolved = await validateAndResolveNotify(def, params)
+          if (to !== undefined) {
+            return dispatchToClient(to, resolved.name, resolved.params)
           }
-          if (def.schema) {
-            const validated = await validateStandardSchema(def.schema, params)
-            if (!validated.ok) {
-              throw new Error(
-                `Invalid outbound notification params for "${name}": ${validated.issues.map((i) => i.message).join(', ')}`
-              )
-            }
-            await emitNotify(name, validated.value as JsonRpcParams | undefined)
-            return
+          try {
+            const sent = await emitNotify(resolved.name, resolved.params)
+            return sent !== false
+          } catch {
+            return false
           }
-          await emitNotify(name, params)
         }
-      : undefined
+      : sendNotifyWithoutEmit
 
+    let afterTasks: Array<() => void | Promise<void>> | undefined
     const ctx = createRpcContext({
       method: item.method,
       id,
       isNotification,
+      clientId: handleOptions?.clientId,
       signal: handleOptions?.signal,
+      canNotify: emitNotify !== undefined,
       sendNotify,
+      onAfterTask(fn) {
+        ;(afterTasks ??= []).push(fn)
+      },
     })
 
     try {
@@ -391,6 +555,19 @@ export function createServer<S extends ServiceTree>(
         await hook(result, ctx)
       }
 
+      if (afterTasks && collectAfter) {
+        const tasks = afterTasks
+        collectAfter(async () => {
+          for (let i = 0; i < tasks.length; i++) {
+            try {
+              await tasks[i]!()
+            } catch (caught) {
+              await runErrorHooks(errorHooks, caught, ctx)
+            }
+          }
+        })
+      }
+
       if (isNotification) {
         return undefined
       }
@@ -429,18 +606,33 @@ export function createServer<S extends ServiceTree>(
         )
       }
 
+      let batchFlushers: Array<() => Promise<void>> | undefined
       const rawResponses = await runWithConcurrency(
         payload,
         batchConcurrency,
-        (entry) => handleSingle(entry, handleOptions)
+        (entry) =>
+          handleSingle(entry, handleOptions, (flush) => {
+            ;(batchFlushers ??= []).push(flush)
+          })
       )
       const responses = rawResponses.filter(
         (res): res is JsonRpcResponse => res !== undefined
       )
+      if (batchFlushers) {
+        const flushers = batchFlushers
+        finalizeAfterTasks(async () => {
+          await Promise.all(flushers.map((run) => run()))
+        }, handleOptions)
+      }
       return responses.length > 0 ? responses : undefined
     }
 
-    return handleSingle(payload, handleOptions)
+    let singleFlush: (() => Promise<void>) | undefined
+    const response = await handleSingle(payload, handleOptions, (flush) => {
+      singleFlush = flush
+    })
+    finalizeAfterTasks(singleFlush, handleOptions)
+    return response
   }
 
   const handleRaw = async (
@@ -454,10 +646,134 @@ export function createServer<S extends ServiceTree>(
     return handle(parsed.value, handleOptions)
   }
 
+  const allocateConnectionId = (): string => {
+    let id: string
+    do {
+      id = `c${++nextConnSeq}`
+    } while (connections?.has(id))
+    return id
+  }
+
+  const connect = (
+    transport: DuplexTransport,
+    connectOptions?: string | ServerConnectOptions
+  ): ServerConnection<S> => {
+    const id =
+      typeof connectOptions === 'string'
+        ? connectOptions
+        : (connectOptions?.id ?? allocateConnectionId())
+    const setupContext =
+      typeof connectOptions === 'string'
+        ? undefined
+        : connectOptions?.setupContext
+
+    let closed = false
+    let offMessage: (() => void) | undefined
+    let offClose: (() => void) | undefined
+
+    const sendRaw = async (serialized: string): Promise<boolean> => {
+      if (closed) return false
+      try {
+        await transport.send(serialized)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const internalConn: InternalConnection = { sendRaw }
+    const registry = (connections ??= new Map())
+    let group = registry.get(id)
+    if (!group) {
+      group = new Set()
+      registry.set(id, group)
+    }
+    group.add(internalConn)
+
+    const cleanup = (): void => {
+      if (closed) return
+      closed = true
+      offMessage?.()
+      offClose?.()
+      offMessage = undefined
+      offClose = undefined
+
+      const current = connections?.get(id)
+      if (current) {
+        current.delete(internalConn)
+        if (current.size === 0) {
+          connections?.delete(id)
+        }
+      }
+    }
+
+    const connHandleOpts: HandleOptions = {
+      clientId: id,
+      setupContext,
+      emitNotify(method, params) {
+        return sendRaw(serializeNotification(method, params))
+      },
+    }
+
+    const handleInbound = async (raw: string): Promise<void> => {
+      let flushAfter: (() => Promise<void>) | undefined
+      const response = await handleRaw(raw, {
+        ...connHandleOpts,
+        onAfterTasks(flush) {
+          flushAfter = flush
+        },
+      })
+      if (response !== undefined) {
+        await sendRaw(stringifyJsonRpcResponse(response))
+      }
+      if (flushAfter) {
+        void flushAfter()
+      }
+    }
+
+    offMessage = transport.onMessage((raw) => {
+      void handleInbound(raw)
+    })
+    offClose = transport.onClose(cleanup)
+    if (closed) {
+      offClose()
+      offClose = undefined
+    }
+
+    const connNotify = async (
+      target: NotifyDef | string,
+      params?: JsonRpcParams
+    ): Promise<boolean> => {
+      const resolved = await validateAndResolveNotify(target, params)
+      if (closed) return false
+      return sendRaw(serializeNotification(resolved.name, resolved.params))
+    }
+
+    return {
+      id,
+      notify: connNotify as ServerConnection<S>['notify'],
+      async close(): Promise<void> {
+        cleanup()
+        await transport.close()
+      },
+    }
+  }
+
+  const notify = async (
+    id: string,
+    target: NotifyDef | string,
+    params?: JsonRpcParams
+  ): Promise<boolean> => {
+    const resolved = await validateAndResolveNotify(target, params)
+    return dispatchToClient(id, resolved.name, resolved.params)
+  }
+
   return {
     service,
     handle,
     handleRaw,
     resolveNotify,
+    connect,
+    notify: notify as RpcServer<S>['notify'],
   }
 }

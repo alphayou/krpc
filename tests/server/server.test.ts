@@ -9,7 +9,7 @@ import { isPlainObject } from '../../src/protocol/guards'
 import type { StandardSchemaV1 } from '../../src/protocol/standard-schema'
 import { JSON_RPC_ERROR_CODES } from '../../src/protocol/types'
 import { createServer, type RpcServer } from '../../src/server/server'
-import { defineContext } from '../../src/service/context'
+import { createRpcContext, defineContext } from '../../src/service/context'
 import { onAfter, onBefore, onError } from '../../src/service/hooks'
 import { defineMethod, defineNotify } from '../../src/service/method'
 import { defineService } from '../../src/service/service'
@@ -686,21 +686,89 @@ describe('createServer — notifications, hooks, context, and ctx.notify', () =>
       },
     })
 
-    // Calling ctx.notify when transport has no emitNotify throws cleanly
+    // Calling ctx.notify with a registered NotifyDef when transport has no emitNotify silently drops and returns false
+    const silentDropApp = defineService(() => {
+      const done = defineNotify<{ jobId: string }>()
+      const ping = defineNotify()
+      const trigger = defineMethod(async (_, ctx) => {
+        const sent1 = await ctx.notify(done, { jobId: 'j0' })
+        const sent2 = await ctx.notify(ping)
+        return {
+          canNotify: ctx.canNotify,
+          clientId: ctx.clientId ?? null,
+          sent1,
+          sent2,
+        }
+      })
+      return { done, ping, trigger }
+    })
+    const silentServer = createServer(silentDropApp)
+    expect(
+      await silentServer.handle({ jsonrpc: '2.0', id: 5, method: 'trigger' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 5,
+      result: { canNotify: false, clientId: null, sent1: false, sent2: false },
+    })
+
+    // Unregistered NotifyDef and invalid schema STILL fail cleanly as -32603 even without emitNotify
     expect(
       await server.handle({
         jsonrpc: '2.0',
-        id: 5,
+        id: 6,
         method: 'job.pushUnregistered',
       })
     ).toEqual({
       jsonrpc: '2.0',
-      id: 5,
+      id: 6,
       error: {
         code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
         message: 'Internal error',
       },
     })
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'job.pushInvalid',
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    // emitNotify returning false or throwing transport error silently drops and returns false
+    const dropResults: boolean[] = []
+    const dropApp = defineService(() => {
+      const note = defineNotify<{ n: number }>()
+      const run = defineMethod(async (_, ctx) => {
+        dropResults.push(await ctx.notify(note, { n: 1 }))
+        return 'ok'
+      })
+      return { note, run }
+    })
+    const dropServer = createServer(dropApp)
+    expect(
+      await dropServer.handle(
+        { jsonrpc: '2.0', id: 1, method: 'run' },
+        { emitNotify: () => false }
+      )
+    ).toEqual({ jsonrpc: '2.0', id: 1, result: 'ok' })
+    expect(
+      await dropServer.handle(
+        { jsonrpc: '2.0', id: 2, method: 'run' },
+        {
+          emitNotify() {
+            throw new Error('socket closed')
+          },
+        }
+      )
+    ).toEqual({ jsonrpc: '2.0', id: 2, result: 'ok' })
+    expect(dropResults).toEqual([false, false])
   })
 })
 
@@ -1028,6 +1096,12 @@ describe('createServer — wire normalization and unserializable result safety',
       resolveNotify() {
         return undefined
       },
+      connect() {
+        throw new Error('not implemented')
+      },
+      async notify() {
+        return false
+      },
     }
 
     // HTTP single & batch must never throw on unserializable response
@@ -1100,5 +1174,447 @@ describe('createServer — wire normalization and unserializable result safety',
 
     await clientPeer.close()
     await serverPeer.close()
+  })
+})
+
+describe('createServer — ctx.after() early reply', () => {
+  it('returns response immediately, runs tasks in order, catches errors via onError, and supports waitUntil & batches', async () => {
+    const timeline: string[] = []
+    const caughtErrors: Array<{ method: string; message: string }> = []
+    const BadInput = defineError(-32001, 'Bad input')
+
+    const app = defineService(() => {
+      onError((err, ctx) => {
+        caughtErrors.push({
+          method: ctx.method,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      })
+
+      const start = defineMethod(async ({ id }: { id: string }, ctx) => {
+        ctx.after(async () => {
+          timeline.push(`after1-start:${id}`)
+          await new Promise((r) => setTimeout(r, 25))
+          timeline.push(`after1-end:${id}`)
+          ctx.after(() => {
+            timeline.push(`after-nested:${id}`)
+          })
+        })
+        ctx.after(() => {
+          timeline.push(`after2:${id}`)
+        })
+        timeline.push(`reply:${id}`)
+        return { accepted: id }
+      })
+
+      const failingAfter = defineMethod((_, ctx) => {
+        ctx.after(() => {
+          throw new Error('sync-after-boom')
+        })
+        ctx.after(async () => {
+          throw new Error('async-after-boom')
+        })
+        ctx.after(() => {
+          timeline.push('after-survived')
+        })
+        return 'ok'
+      })
+
+      const failEarly = defineMethod((_, ctx) => {
+        ctx.after(() => {
+          timeline.push('should-not-run')
+        })
+        return BadInput()
+      })
+
+      const noAfter = defineMethod(() => 'fast')
+
+      return { start, failingAfter, failEarly, noAfter }
+    })
+
+    const server = createServer(app)
+
+    // 1. Response arrives before slow ctx.after finishes, and waitUntil receives the background promise
+    const bgPromises: Promise<void>[] = []
+    const res = await server.handle(
+      { jsonrpc: '2.0', id: 1, method: 'start', params: { id: 'j1' } },
+      { waitUntil: (p) => bgPromises.push(p) }
+    )
+    expect(res).toEqual({ jsonrpc: '2.0', id: 1, result: { accepted: 'j1' } })
+    expect(timeline).not.toContain('after1-end:j1')
+    expect(bgPromises).toHaveLength(1)
+
+    await Promise.all(bgPromises)
+    expect(timeline).toEqual([
+      'reply:j1',
+      'after1-start:j1',
+      'after1-end:j1',
+      'after2:j1',
+      'after-nested:j1',
+    ])
+
+    // 2. waitUntil is NOT called when ctx.after is never registered
+    bgPromises.length = 0
+    expect(
+      await server.handle(
+        { jsonrpc: '2.0', id: 2, method: 'noAfter' },
+        { waitUntil: (p) => bgPromises.push(p) }
+      )
+    ).toEqual({ jsonrpc: '2.0', id: 2, result: 'fast' })
+    expect(bgPromises).toHaveLength(0)
+
+    // 3. Domain error short-circuits without running ctx.after
+    timeline.length = 0
+    expect(
+      await server.handle(
+        { jsonrpc: '2.0', id: 3, method: 'failEarly' },
+        { waitUntil: (p) => bgPromises.push(p) }
+      )
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 3,
+      error: { code: -32001, message: 'Bad input' },
+    })
+    expect(bgPromises).toHaveLength(0)
+    expect(timeline).toEqual([])
+
+    // 4. Sync & async errors inside ctx.after are caught and forwarded to onError without rejecting
+    caughtErrors.length = 0
+    expect(
+      await server.handle(
+        { jsonrpc: '2.0', id: 4, method: 'failingAfter' },
+        { waitUntil: (p) => bgPromises.push(p) }
+      )
+    ).toEqual({ jsonrpc: '2.0', id: 4, result: 'ok' })
+    await Promise.all(bgPromises)
+    expect(caughtErrors).toEqual([
+      { method: 'failingAfter', message: 'sync-after-boom' },
+      { method: 'failingAfter', message: 'async-after-boom' },
+    ])
+    expect(timeline).toEqual(['after-survived'])
+
+    // 5. Works for JSON-RPC Notifications (returns undefined, still executes ctx.after)
+    timeline.length = 0
+    bgPromises.length = 0
+    expect(
+      await server.handle(
+        { jsonrpc: '2.0', method: 'start', params: { id: 'notif' } },
+        { waitUntil: (p) => bgPromises.push(p) }
+      )
+    ).toBeUndefined()
+    await Promise.all(bgPromises)
+    expect(timeline).toContain('after1-end:notif')
+    expect(timeline).toContain('after2:notif')
+
+    // 6. Works cleanly for batches with deferred onAfterTasks
+    timeline.length = 0
+    let deferredFlush: (() => Promise<void>) | undefined
+    const batchRes = await server.handle(
+      [
+        { jsonrpc: '2.0', id: 10, method: 'start', params: { id: 'b1' } },
+        { jsonrpc: '2.0', id: 11, method: 'noAfter' },
+        { jsonrpc: '2.0', id: 12, method: 'start', params: { id: 'b2' } },
+      ],
+      {
+        onAfterTasks(flush) {
+          deferredFlush = flush
+        },
+      }
+    )
+    expect(batchRes).toEqual([
+      { jsonrpc: '2.0', id: 10, result: { accepted: 'b1' } },
+      { jsonrpc: '2.0', id: 11, result: 'fast' },
+      { jsonrpc: '2.0', id: 12, result: { accepted: 'b2' } },
+    ])
+    // Strictly nothing from ctx.after has started yet before deferredFlush() is called!
+    expect(timeline).toEqual(['reply:b1', 'reply:b2'])
+    expect(deferredFlush).toBeDefined()
+    await deferredFlush!()
+    expect(timeline).toContain('after1-end:b1')
+    expect(timeline).toContain('after1-end:b2')
+  })
+})
+
+describe('createServer — server.connect(), server.notify(), and targeted ctx.notify()', () => {
+  it('supports auto-generated IDs, multi-tab same id, auto-cleanup, targeted ctx.notify, and ordered ctx.after', async () => {
+    const TagCtx = defineContext('none')
+    const progressSchema: StandardSchemaV1<
+      { jobId: string; percent: number },
+      { jobId: string; percent: number }
+    > = {
+      '~standard': {
+        version: 1,
+        vendor: 'test',
+        validate(value) {
+          if (
+            isPlainObject(value) &&
+            typeof value.jobId === 'string' &&
+            typeof value.percent === 'number'
+          ) {
+            return { value: { jobId: value.jobId, percent: value.percent } }
+          }
+          return { issues: [{ message: 'invalid progress' }] }
+        },
+      },
+    }
+
+    const job = defineService(() => {
+      const progress = defineNotify(progressSchema)
+      const done = defineNotify<{ jobId: string }>()
+      const ping = defineNotify()
+
+      const whoami = defineMethod((_, ctx) => ({
+        clientId: ctx.clientId ?? null,
+        canNotify: ctx.canNotify,
+        tag: ctx.get(TagCtx),
+      }))
+
+      const startEarly = defineMethod(({ jobId }: { jobId: string }, ctx) => {
+        ctx.after(async () => {
+          await ctx.notify(done, { jobId })
+        })
+        return { accepted: jobId }
+      })
+
+      const notifyUser = defineMethod(
+        async (
+          { targetId, jobId }: { targetId: string; jobId: string },
+          ctx
+        ) => {
+          const sentDone = await ctx.notify(done, { jobId }, targetId)
+          const sentPing = await ctx.notify(ping, undefined, targetId)
+          return { sentDone, sentPing }
+        }
+      )
+
+      return { progress, done, ping, whoami, startEarly, notifyUser }
+    })
+
+    const app = defineService(() => ({ job }))
+    const server = createServer(app)
+
+    // Before any connect(), server.notify silently drops and returns false (never throws)
+    expect(await server.notify('ghost', 'job.done', { jobId: 'x' })).toBe(false)
+    expect(await server.notify('ghost', job.ping)).toBe(false)
+
+    // Schema & unregistered NotifyDef validation still throw even when target id is offline
+    await expect(
+      server.notify('ghost', 'job.progress', {
+        jobId: 'x',
+        percent: 'bad' as never,
+      })
+    ).rejects.toThrow('Invalid outbound notification params')
+    const unregistered = defineNotify<{ x: number }>()
+    await expect(
+      server.notify('ghost', unregistered, { x: 1 })
+    ).rejects.toThrow('Notification definition is not registered')
+
+    // 1. Shorthand string id + multi-tab same id ('alice' has tab1 & tab2)
+    const [tAlice1Srv, tAlice1Cli] = createMemoryDuplexPair()
+    const [tAlice2Srv, tAlice2Cli] = createMemoryDuplexPair()
+    const connAlice1 = server.connect(tAlice1Srv, 'alice')
+    const connAlice2 = server.connect(tAlice2Srv, {
+      id: 'alice',
+      setupContext(ctx) {
+        ctx.set(TagCtx, 'tab-2')
+      },
+    })
+    expect(connAlice1.id).toBe('alice')
+    expect(connAlice2.id).toBe('alice')
+
+    const alice1Client = createPeer<typeof app>(tAlice1Cli)
+    const alice2Client = createPeer<typeof app>(tAlice2Cli)
+
+    expect(await alice1Client.call('job.whoami')).toEqual({
+      ok: true,
+      value: { clientId: 'alice', canNotify: true, tag: 'none' },
+    })
+    expect(await alice2Client.call('job.whoami')).toEqual({
+      ok: true,
+      value: { clientId: 'alice', canNotify: true, tag: 'tab-2' },
+    })
+
+    const tab1Done: string[] = []
+    const tab2Done: string[] = []
+    const tab1Pings: number[] = []
+    const tab2Pings: number[] = []
+    alice1Client.on('job.done', ({ jobId }) => {
+      tab1Done.push(jobId)
+    })
+    alice2Client.on('job.done', ({ jobId }) => {
+      tab2Done.push(jobId)
+    })
+    alice1Client.on('job.ping', () => {
+      tab1Pings.push(1)
+    })
+    alice2Client.on('job.ping', () => {
+      tab2Pings.push(1)
+    })
+
+    // server.notify delivers to ALL tabs registered under 'alice'
+    expect(
+      await server.notify('alice', 'job.done', { jobId: 'all-tabs' })
+    ).toBe(true)
+    expect(await server.notify('alice', job.ping)).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(tab1Done).toEqual(['all-tabs'])
+    expect(tab2Done).toEqual(['all-tabs'])
+    expect(tab1Pings).toHaveLength(1)
+    expect(tab2Pings).toHaveLength(1)
+
+    // conn.notify targets ONLY that specific tab
+    expect(await connAlice1.notify(job.done, { jobId: 'tab1-only' })).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(tab1Done).toEqual(['all-tabs', 'tab1-only'])
+    expect(tab2Done).toEqual(['all-tabs'])
+
+    // Stateless server.handle (e.g. HTTP) AND duplex client targeting 'alice' via ctx.notify(def, params, targetId)
+    expect(
+      await alice1Client.call('job.notifyUser', {
+        targetId: 'alice',
+        jobId: 'from-duplex',
+      })
+    ).toEqual({
+      ok: true,
+      value: { sentDone: true, sentPing: true },
+    })
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'job.notifyUser',
+        params: { targetId: 'alice', jobId: 'from-http' },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { sentDone: true, sentPing: true },
+    })
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'job.notifyUser',
+        params: { targetId: 'offline', jobId: 'nope' },
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      result: { sentDone: false, sentPing: false },
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(tab1Done).toContain('from-duplex')
+    expect(tab2Done).toContain('from-duplex')
+    expect(tab1Done).toContain('from-http')
+    expect(tab2Done).toContain('from-http')
+
+    // Closing tab 1 removes only tab 1; tab 2 continues receiving notifications
+    await connAlice1.close()
+    expect(await connAlice1.notify(job.done, { jobId: 'after-close' })).toBe(
+      false
+    )
+    expect(
+      await server.notify('alice', job.done, { jobId: 'tab2-still-up' })
+    ).toBe(true)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(tab1Done).not.toContain('tab2-still-up')
+    expect(tab2Done).toContain('tab2-still-up')
+
+    // Closing tab 2 from client side auto-cleans 'alice' from registry
+    await alice2Client.close()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(await server.notify('alice', job.done, { jobId: 'gone' })).toBe(
+      false
+    )
+
+    // 2. Auto-generated IDs skip colliding user-supplied IDs ('c1') and are visible on ctx.clientId
+    const [tC1Srv, tC1Cli] = createMemoryDuplexPair()
+    const [tAutoSrv, tAutoCli] = createMemoryDuplexPair()
+    const manualC1 = server.connect(tC1Srv, 'c1')
+    const autoConn = server.connect(tAutoSrv)
+    expect(manualC1.id).toBe('c1')
+    expect(autoConn.id).toBe('c2')
+
+    const autoClient = createPeer<typeof app>(tAutoCli)
+    expect(await autoClient.call('job.whoami')).toEqual({
+      ok: true,
+      value: { clientId: 'c2', canNotify: true, tag: 'none' },
+    })
+
+    // 3. ctx.after() on server.connect strictly delivers call response BEFORE ctx.notify
+    const order: string[] = []
+    autoClient.on('job.done', ({ jobId }) => {
+      order.push(`notify:${jobId}`)
+    })
+    const earlyRes = await autoClient.call('job.startEarly', {
+      jobId: 'ordered-1',
+    })
+    order.push(`response:${earlyRes.ok ? earlyRes.value.accepted : 'err'}`)
+    await new Promise((r) => setTimeout(r, 15))
+    expect(order).toEqual(['response:ordered-1', 'notify:ordered-1'])
+
+    // Same strict ordering for batches!
+    order.length = 0
+    const [b0, b1] = await autoClient.batch((b) => [
+      b.call('job.startEarly', { jobId: 'batch-1' }),
+      b.call('job.startEarly', { jobId: 'batch-2' }),
+    ])
+    order.push(
+      `batch:${b0.ok ? b0.value.accepted : 'err'},${b1.ok ? b1.value.accepted : 'err'}`
+    )
+    await new Promise((r) => setTimeout(r, 15))
+    expect(order[0]).toBe('batch:batch-1,batch-2')
+    expect(order).toContain('notify:batch-1')
+    expect(order).toContain('notify:batch-2')
+
+    await autoConn.close()
+    await manualC1.close()
+    await tC1Cli.close()
+
+    // 4. Synchronous onClose (already-closed transport) cleans up cleanly without leaking
+    const closedTransport = {
+      send() {
+        throw new Error('closed')
+      },
+      onMessage() {
+        return () => {}
+      },
+      onClose(h: () => void) {
+        h()
+        return () => {}
+      },
+      close() {},
+    }
+    const deadConn = server.connect(closedTransport, 'already-dead')
+    expect(await server.notify('already-dead', job.ping)).toBe(false)
+    expect(await deadConn.notify(job.ping)).toBe(false)
+
+    // 5. Failing transport.send on an active server.connect silently returns false (never throws)
+    const failingSendTransport = {
+      send() {
+        throw new Error('broken pipe')
+      },
+      onMessage() {
+        return () => {}
+      },
+      onClose() {
+        return () => {}
+      },
+      close() {},
+    }
+    const brokenConn = server.connect(failingSendTransport, 'broken-pipe')
+    expect(await server.notify('broken-pipe', job.ping)).toBe(false)
+    expect(await brokenConn.notify(job.ping)).toBe(false)
+    await brokenConn.close()
+
+    // 6. Standalone createRpcContext without sendNotify silently drops ctx.notify
+    const standaloneCtx = createRpcContext({
+      method: 'standalone',
+      id: 1,
+      isNotification: false,
+    })
+    expect(standaloneCtx.clientId).toBeUndefined()
+    expect(standaloneCtx.canNotify).toBe(false)
+    expect(await standaloneCtx.notify(job.ping)).toBe(false)
   })
 })

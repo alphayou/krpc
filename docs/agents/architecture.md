@@ -12,9 +12,10 @@ src/
 ├── service/              # defineService, defineMethod, defineNotify, defineContext, on* hooks, type utils
 ├── server/               # createServer (dispatch, hooks, batch concurrency/limits, error sanitization)
 ├── client/               # createClient (call/notify/batch/timeout/abort), createProxy
-├── peer/                 # createPeer (full-duplex server + client + push notifications)
+├── peer/                 # createPeer (full-duplex RpcServer + KrpcClient + push notifications)
 └── transports/           # ClientTransport, DuplexTransport, memory, http, ws, stream
 tests/                    # Mirrors src/ plus compile-time tests/types.test.ts
+examples/                 # Runnable end-to-end examples (HTTP, WebSocket, Streams)
 ```
 
 ## Dependency & Runtime Boundaries

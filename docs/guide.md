@@ -57,9 +57,10 @@ const greet = defineMethod(
 )
 ```
 
-- Callers can omit `excited` (`client.call("greet", { name: "Ada" })`).
+- Callers can omit `excited` (`client.call('greet', { name: 'Ada' })`).
 - Inside the handler, `excited` is guaranteed to be `boolean`.
 - Validation failures automatically return JSON-RPC `-32602` (`Invalid params`) with concise issue details.
+- You can also validate outputs by passing `{ input, output }` as the first argument to `defineMethod` (output validation failures return `-32603` `Internal error`).
 
 ## Typed Domain Errors
 
@@ -171,8 +172,9 @@ const client = createClient<App>(httpTransport('http://localhost:3000/rpc'), {
 ### Calling Methods & Sending Notifications
 
 ```ts
-// Zero-argument call
+// Zero-argument call (pass `undefined` before per-call options if needed)
 const pong = await client.call('ping')
+const fastPong = await client.call('ping', undefined, { timeout: 1_000 })
 
 // Request with params and per-call options
 const res = await client.call(
@@ -202,7 +204,7 @@ const [addRes, sumRes, logRes] = await client.batch((b) => [
 
 ### Proxy Client
 
-If you prefer property-style calls over string method names, wrap any client with `createProxy`:
+If you prefer property-style calls over string method names, wrap any `KrpcClient` or `KrpcPeer` with `createProxy`:
 
 ```ts
 import { createProxy } from 'krpc'
@@ -258,6 +260,7 @@ const jobs = defineService(() => {
 // Server side: push inside a handler (ctx.notify) or outside (serverPeer.notify)
 const serverPeer = createPeer(serverTransport, jobs)
 await serverPeer.notify('progress', { jobId: '1', percent: 80 })
+await serverPeer.notify(jobs.progress, { jobId: '1', percent: 90 })
 
 // Client side: call methods and subscribe to server notifications
 const clientPeer = createPeer<typeof jobs>(

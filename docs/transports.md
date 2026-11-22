@@ -7,12 +7,12 @@
 
 ## Built-in Transports
 
-| Entry Point   | Exports                                           | Model           | Best For                                        |
-| ------------- | ------------------------------------------------- | --------------- | ----------------------------------------------- |
-| `krpc`        | `createMemoryTransport`, `createMemoryDuplexPair` | Client & Duplex | Unit tests, SSR, in-process calls               |
-| `krpc/http`   | `httpTransport`, `createHttpHandler`              | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`          | Duplex          | Real-time apps, server push, bidirectional RPC  |
-| `krpc/stream` | `streamTransport`                                 | Duplex          | stdio, Web Workers, pipes, LSP-style framing    |
+| Entry Point   | Exports                                                                                                                 | Model           | Best For                                        |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------- |
+| `krpc`        | `createMemoryTransport`, `createMemoryDuplexPair`, `isDuplexTransport`                                                  | Client & Duplex | Unit tests, SSR, in-process calls               |
+| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers |
+| `krpc/ws`     | `wsTransport`, `createWsServerTransport`                                                                                | Duplex          | Real-time apps, server push, bidirectional RPC  |
+| `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | stdio, Web Workers, pipes, LSP-style framing    |
 
 ## Memory (`krpc`)
 
@@ -27,11 +27,17 @@ import {
   createServer,
 } from 'krpc'
 
-// Request/response
+// Request/response (accepts optional `{ setupContext }` for per-call context)
 const server = createServer(app)
-const client = createClient<App>(createMemoryTransport(server))
+const client = createClient<App>(
+  createMemoryTransport(server, {
+    setupContext(ctx) {
+      ctx.set(Locale, 'en-US')
+    },
+  })
+)
 
-// Full-duplex
+// Full-duplex (messages delivered asynchronously via microtasks)
 const [serverTransport, clientTransport] = createMemoryDuplexPair()
 const serverPeer = createPeer(serverTransport, app)
 const clientPeer = createPeer<App>(clientTransport)
@@ -49,13 +55,17 @@ import { httpTransport } from 'krpc/http'
 
 const client = createClient<App>(
   httpTransport('http://localhost:3000/rpc', {
-    headers: { authorization: 'Bearer token' },
+    // Static headers or a sync/async factory invoked per request
+    headers: async () => ({
+      authorization: `Bearer ${await getToken()}`,
+    }),
+    credentials: 'include',
   }),
   { timeout: 5_000 }
 )
 ```
 
-`httpTransport` sends `POST` requests with `Content-Type: application/json`, forwards `AbortSignal` to `fetch`, accepts `204 No Content` for Notifications, and throws `KrpcTransportError` on non-2xx responses or invalid JSON bodies.
+`httpTransport` sends `POST` requests with `Content-Type: application/json`, supports custom `fetch` and `credentials`, forwards `AbortSignal` to `fetch`, accepts `204 No Content` (or empty bodies) for Notifications, and throws `KrpcTransportError` (with `status`) on non-2xx responses or invalid JSON bodies.
 
 ### Server
 
@@ -67,7 +77,7 @@ import { createHttpHandler } from 'krpc/http'
 
 const server = createServer(app, { maxBatchSize: 50, batchConcurrency: 10 })
 const rpcHandler = createHttpHandler(server, {
-  maxBodySize: 1024 * 1024, // 1 MiB
+  maxBodySize: 1024 * 1024, // 1 MiB (default)
   setupContext(ctx, req) {
     ctx.set(Headers, req.headers)
   },
@@ -88,11 +98,11 @@ Bun.serve({
 | ---------------------------------------------------- | ---------------------------- | ---------------------------------------------- |
 | JSON-RPC success, error, or non-empty batch response | `200 OK`                     | JSON-RPC response payload (`application/json`) |
 | Pure Notification or all-Notification batch          | `204 No Content`             | Empty                                          |
-| Non-`POST` HTTP method                               | `405 Method Not Allowed`     | Empty / error text (`Allow: POST`)             |
-| Request body exceeds `maxBodySize`                   | `413 Payload Too Large`      | Empty / error text                             |
-| Missing or non-JSON `Content-Type` header            | `415 Unsupported Media Type` | Empty / error text                             |
+| Non-`POST` HTTP method                               | `405 Method Not Allowed`     | `'Method Not Allowed'` (`allow: POST`)         |
+| Request body exceeds `maxBodySize`                   | `413 Payload Too Large`      | `'Payload Too Large'`                          |
+| Missing or non-JSON `Content-Type` header            | `415 Unsupported Media Type` | `'Unsupported Media Type'`                     |
 
-- **`maxBodySize`**: Measured incrementally on the incoming byte stream so oversized bodies are rejected immediately without trusting `Content-Length`.
+- **`maxBodySize`**: Measured incrementally on the incoming byte stream (and fast-rejected if `Content-Length` already exceeds the limit) so oversized bodies are cancelled immediately.
 - **Cancellation**: `req.signal` is automatically forwarded to `ctx.signal`.
 - **Context**: `setupContext(ctx, req)` runs before `onBefore` hooks to attach headers, cookies, or request metadata.
 
@@ -118,17 +128,45 @@ const res = await peer.call('job.start', { jobId: '1' })
 off()
 ```
 
-- Messages sent while `socket.readyState === WebSocket.CONNECTING` are buffered and flushed in order once the socket opens.
+- Messages sent while `socket.readyState === WebSocket.CONNECTING` are queued and flushed in FIFO order once the socket opens (or rejected if closed before opening).
 - When the socket closes, all pending in-flight requests are automatically rejected with `KrpcTransportError`.
 - Reconnection policy (backoff, auth re-handshake, resubscription) is left to application code.
 
 ### Server Bridge: `createWsServerTransport(ws)`
 
-Adapts server-side WebSocket APIs such as `Bun.serve`'s `ServerWebSocket` (where `message` and `close` callbacks live on the server handler) into a `DuplexTransport` that you can pass directly to `createPeer(transport, app)`.
+Adapts server-side WebSocket APIs such as `Bun.serve`'s `ServerWebSocket` (where `message` and `close` callbacks live on the server handler). It returns a `WsServerTransportBridge` (`{ transport, handleMessage, handleClose }`):
+
+```ts
+import { createPeer } from 'krpc'
+import { createWsServerTransport, type WsServerTransportBridge } from 'krpc/ws'
+
+const bridges = new WeakMap<object, WsServerTransportBridge>()
+
+Bun.serve({
+  fetch(req, server) {
+    if (server.upgrade(req)) return
+    return new Response('Not Found', { status: 404 })
+  },
+  websocket: {
+    open(ws) {
+      const bridge = createWsServerTransport(ws)
+      bridges.set(ws, bridge)
+      createPeer(bridge.transport, app)
+    },
+    message(ws, message) {
+      bridges.get(ws)?.handleMessage(message)
+    },
+    close(ws) {
+      bridges.get(ws)?.handleClose()
+      bridges.delete(ws)
+    },
+  },
+})
+```
 
 ## Web Streams (`krpc/stream`)
 
-`streamTransport({ readable, writable, framing, maxMessageSize? })` creates a `DuplexTransport` over any Web Standard `ReadableStream<Uint8Array>` and `WritableStream<Uint8Array>` pair (stdio, pipes, IPC, Web Workers).
+`streamTransport({ readable, writable, framing?, maxMessageSize? })` creates a `DuplexTransport` over any Web Standard `ReadableStream<Uint8Array>` and `WritableStream<Uint8Array>` pair (stdio, pipes, IPC, Web Workers).
 
 ```ts
 import { createPeer } from 'krpc'
@@ -137,8 +175,8 @@ import { streamTransport } from 'krpc/stream'
 const transport = streamTransport({
   readable,
   writable,
-  framing: 'content-length', // or "ndjson"
-  maxMessageSize: 1024 * 1024,
+  framing: 'content-length', // default: 'ndjson'
+  maxMessageSize: 16 * 1024 * 1024, // default: 16 MiB
 })
 
 const peer = createPeer(transport, app)
@@ -146,10 +184,10 @@ const peer = createPeer(transport, app)
 
 ### Framing Modes
 
-- **`ndjson`**: One UTF-8 JSON message per `\n`-terminated line. Simple and human-readable for CLIs and pipes.
+- **`ndjson`** (default): One UTF-8 JSON message per `\n`-terminated line. Simple and human-readable for CLIs and pipes.
 - **`content-length`**: LSP-style `Content-Length: <bytes>\r\n\r\n<utf8-json>` framing using exact UTF-8 byte counts (`TextEncoder` / `TextDecoder`). Safely handles fragmented chunks, coalesced frames, and multi-byte UTF-8 characters split across chunks.
 
-Both modes enforce `maxMessageSize` to guard against unbounded buffers.
+Both modes enforce `maxMessageSize` to guard against unbounded buffers. Low-level framing helpers (`encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder`) are also exported from `krpc/stream` for custom byte-stream integrations.
 
 ## Writing a Custom Transport
 
@@ -157,7 +195,7 @@ Both modes enforce `maxMessageSize` to guard against unbounded buffers.
 
 ```ts
 export interface TransportSendOptions {
-  signal?: AbortSignal
+  readonly signal?: AbortSignal
 }
 
 export type ClientTransport = (
@@ -166,22 +204,20 @@ export type ClientTransport = (
 ) => Promise<JsonRpcResponsePayload | void>
 ```
 
-Example—wrapping `httpTransport` with dynamic bearer tokens:
+Example—wrapping any `ClientTransport` with latency logging:
 
 ```ts
 import type { ClientTransport } from 'krpc'
-import { httpTransport } from 'krpc/http'
 
-export function authedHttpTransport(
-  url: string,
-  getToken: () => Promise<string>
-): ClientTransport {
+export function withLogging(inner: ClientTransport): ClientTransport {
   return async (payload, options) => {
-    const token = await getToken()
-    const base = httpTransport(url, {
-      headers: { authorization: `Bearer ${token}` },
-    })
-    return base(payload, options)
+    const start = performance.now()
+    try {
+      return await inner(payload, options)
+    } finally {
+      const ms = (performance.now() - start).toFixed(1)
+      console.log(`rpc batch/call finished in ${ms}ms`)
+    }
   }
 }
 ```

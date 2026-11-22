@@ -29,4 +29,5 @@ Read on demand — do not duplicate these docs here:
   - [docs/guide.md](./docs/guide.md) — API usage guide
   - [docs/transports.md](./docs/transports.md) — built-in and custom transports
   - [docs/protocol.md](./docs/protocol.md) — JSON-RPC 2.0 compliance reference
+  - [examples/](./examples/) — runnable end-to-end examples
   - [CONTRIBUTING.md](./CONTRIBUTING.md) — contributor workflow

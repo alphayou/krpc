@@ -81,9 +81,9 @@ On duplex transports, declare outbound notifications with `defineNotify<Payload>
 ## Error Sanitization & `formatError`
 
 1. **`defineError` values and `JsonRpcError` instances** are returned to the client with their `code`, `message`, and optional `data`.
-2. **Standard Schema validation failures** become `-32602` (`"Invalid params"`) with concise issue details in `data`.
-3. **Unexpected thrown errors** are sanitized to `-32603` (`"Internal error"`) so stack traces and internal details are never leaked.
-4. **Custom formatting**: Pass `formatError(err, ctx)` to `createServer` to map custom exceptions or attach request metadata:
+2. **Standard Schema input validation failures** become `-32602` (`'Invalid params'`) with concise issue details in `data`.
+3. **Output schema validation failures and unexpected thrown errors** are sanitized to `-32603` (`'Internal error'`) so stack traces and internal details are never leaked.
+4. **Custom formatting**: Pass `formatError(err, ctx)` to `createServer` to map custom exceptions to a `JsonRpcError` or `JsonRpcErrorObject`:
 
 ```ts
 const server = createServer(app, {
@@ -96,9 +96,10 @@ const server = createServer(app, {
 
 ## Batch Execution
 
-- JSON array payloads execute as JSON-RPC 2.0 batches concurrently by default.
-- Set `maxBatchSize` on `createServer` to reject oversized batches.
+- JSON array payloads execute as JSON-RPC 2.0 batches concurrently by default (`batchConcurrency: Infinity`).
+- `maxBatchSize` defaults to `100` to protect against oversized batches.
 - Set `batchConcurrency` to bound parallelism (`batchConcurrency: 1` executes batch items serially).
+- Reserved `rpc.*` methods are rejected with `-32601` by default (`allowReservedMethods: false`).
 - Malformed entries produce independent `-32600` responses without failing valid sibling entries.
 - If every item in a batch is a Notification, the server produces no response (`204 No Content` over HTTP).
 

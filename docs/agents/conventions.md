@@ -10,7 +10,7 @@
   - `noImplicitOverride: true`
   - `noFallthroughCasesInSwitch: true`
 - **Tests**: `bun test` / `bun run test:coverage` (`bunfig.toml` sets `root = "tests"`). Include `@ts-expect-error` negative assertions in `tests/types.test.ts` for type-level constraints.
-- **Bundling**: `tsdown` ESM-only builds with `.d.mts` declarations and sourcemaps (`dist/`). Subpath entry points: `.`, `./http`, `./ws`, `./stream` (add to `tsdown.config.ts` and `package.json#exports` once those entries exist).
+- **Bundling**: `tsdown` ESM-only builds with `.d.mts` declarations, sourcemaps, and `treeshake: true` (`dist/`). Subpath entry points: `.` (`krpc`), `./http` (`krpc/http`), `./ws` (`krpc/ws`), and `./stream` (`krpc/stream`).
 
 ## Formatting & Style
 
@@ -39,6 +39,6 @@
 
 Before handing off or publishing:
 
-1. Run `bun run format:check && bun run typecheck && bun run test:coverage && bun run build`.
+1. Run `bun run verify && bun run test:coverage && bun run build`.
 2. Verify `package.json` metadata (`description`, `license: "MPL-2.0"`, `author`, `keywords`, `repository`, `homepage`, `bugs`, `sideEffects: false`, `exports`, `publishConfig.access: "public"`, optional `typescript` peer dep).
 3. Ensure `dist/` contains only expected ESM `.mjs` and `.d.mts` artifacts and zero runtime dependencies in `package.json`.

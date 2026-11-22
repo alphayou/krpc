@@ -60,10 +60,22 @@ export interface MethodDef<Input = any, RawReturn = any> {
   readonly _return?: RawReturn
 }
 
+/**
+ * Normalize a handler's success return type to match JSON-RPC 2.0 wire semantics:
+ * `void` and `undefined` serialize as `null` so the required `"result"` member is never omitted.
+ */
+export type NormalizeRpcResult<T> = [T] extends [never]
+  ? never
+  : [T] extends [void | undefined]
+    ? null
+    : undefined extends T
+      ? Exclude<T, undefined | void> | null
+      : T
+
 /** Extract the success return type of a `MethodDef`, excluding branded `RpcErrorValue`s. */
 export type InferMethodValue<M> =
   M extends MethodDef<any, infer RawReturn>
-    ? Exclude<RawReturn, RpcErrorValue>
+    ? NormalizeRpcResult<Exclude<RawReturn, RpcErrorValue>>
     : never
 
 /** Extract the branded `RpcErrorValue` union returned by a `MethodDef`. */

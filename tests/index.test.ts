@@ -83,6 +83,7 @@ const admin = defineService(() => {
 
 const app = defineService(() => ({
   ping: defineMethod(() => 'pong' as const),
+  noop: defineMethod(() => {}),
   log: defineMethod(({ message }: { message: string }) => {
     receivedLogs.push(message)
   }),
@@ -106,6 +107,7 @@ describe('krpc public API end-to-end integration', () => {
     const rpc = createProxy(client)
 
     expect(await rpc.ping()).toEqual({ ok: true, value: 'pong' })
+    expect(await rpc.noop()).toEqual({ ok: true, value: null })
     expect(await rpc.admin.secret()).toEqual({ ok: true, value: 'top-secret' })
 
     const overflow = await rpc.math.divide({ a: 2e6, b: 2 })
@@ -161,6 +163,24 @@ describe('krpc public API end-to-end integration', () => {
       expect(await authClient.call('admin.secret')).toEqual({
         ok: true,
         value: 'top-secret',
+      })
+
+      // Void handler must serialize explicit `"result": null` over HTTP
+      expect(await authClient.call('noop')).toEqual({ ok: true, value: null })
+      const rawNoopRes = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'noop' }),
+      })
+      expect(await rawNoopRes.text()).toBe(
+        '{"jsonrpc":"2.0","id":99,"result":null}'
+      )
+
+      // Untyped client works against external JSON-RPC 2.0 HTTP endpoints
+      const untypedClient = createClient(httpTransport(url))
+      expect(await untypedClient.call('math.sum', [10, 20])).toEqual({
+        ok: true,
+        value: 30,
       })
 
       await authClient.notify('log', { message: 'http-notify' })
@@ -219,6 +239,9 @@ describe('krpc public API end-to-end integration', () => {
         value: { started: 'ws-1', locale: 'en-US' },
       })
 
+      // Void handler round-trip over real WebSocket
+      expect(await clientPeer.call('noop')).toEqual({ ok: true, value: null })
+
       // Server-initiated push outside handler via serverPeer.notify
       await activeServerPeer?.notify('job.progress', {
         jobId: 'ws-1',
@@ -266,6 +289,7 @@ describe('krpc public API end-to-end integration', () => {
         ok: true,
         value: 5,
       })
+      expect(await clientPeer.call('noop')).toEqual({ ok: true, value: null })
       expect(await clientPeer.call('job.start', { jobId: framing })).toEqual({
         ok: true,
         value: { started: framing, locale: 'en-US' },
@@ -275,5 +299,33 @@ describe('krpc public API end-to-end integration', () => {
       await clientPeer.close()
       await serverPeer.close()
     }
+  })
+
+  it('supports untyped createPeer against external duplex JSON-RPC 2.0 servers', async () => {
+    const aToB = new TransformStream<Uint8Array, Uint8Array>()
+    const bToA = new TransformStream<Uint8Array, Uint8Array>()
+
+    const serverPeer = createPeer(
+      streamTransport({ readable: aToB.readable, writable: bToA.writable }),
+      app
+    )
+    const untypedPeer = createPeer(
+      streamTransport({ readable: bToA.readable, writable: aToB.writable })
+    )
+
+    const seen: unknown[] = []
+    untypedPeer.on('job.progress', (payload) => {
+      seen.push(payload)
+    })
+
+    expect(await untypedPeer.call('ping')).toEqual({ ok: true, value: 'pong' })
+    expect(await untypedPeer.call('job.start', { jobId: 'ext-1' })).toEqual({
+      ok: true,
+      value: { started: 'ext-1', locale: 'en-US' },
+    })
+    expect(seen).toEqual([{ jobId: 'ext-1', percent: 50 }])
+
+    await untypedPeer.close()
+    await serverPeer.close()
   })
 })

@@ -1,9 +1,40 @@
 import type { RPC_ERROR_BRAND, RpcErrorValue } from '../protocol/errors'
-import type { StandardRpcError } from '../protocol/types'
-import type { CallArgs, MethodDef, NotifyDef, ValidRpcParams } from './method'
+import type {
+  JsonRpcErrorObject,
+  JsonRpcParams,
+  StandardRpcError,
+} from '../protocol/types'
+import type {
+  CallArgs,
+  MethodDef,
+  NormalizeRpcResult,
+  NotifyDef,
+  ValidRpcParams,
+} from './method'
 import type { ServiceTree } from './service'
 
-export type { CallArgs, ValidRpcParams }
+export type { CallArgs, NormalizeRpcResult, ValidRpcParams }
+
+declare const UNTYPED_SERVICE_BRAND: unique symbol
+
+/**
+ * Default service type for untyped `createClient(transport)` and `createPeer(transport)`
+ * instances talking to external JSON-RPC 2.0 servers (e.g. Ethereum, LSP, MCP)
+ * without a shared `krpc` `App` type.
+ */
+export interface UntypedService {
+  /** Phantom marker distinguishing untyped external services from typed `ServiceTree`s. */
+  readonly [UNTYPED_SERVICE_BRAND]: true
+}
+
+/** @internal Detect `UntypedService` without matching `never` or `any`. */
+export type IsUntypedService<S> = [S] extends [never]
+  ? false
+  : 0 extends 1 & S
+    ? false
+    : [S] extends [UntypedService]
+      ? true
+      : false
 
 /** Strip the internal brand from an `RpcErrorValue` union to produce plain client error objects. */
 export type ToClientError<E> = E extends RpcErrorValue
@@ -33,9 +64,13 @@ type FlattenEntries<T, Prefix extends string = ''> = {
 }[keyof T & string]
 
 /** Recursively flatten a nested service tree into dot-separated method and notification entries. */
-export type FlattenService<S> = [FlattenEntries<S>] extends [never]
+export type FlattenService<S> = [S] extends [never]
   ? Record<never, never>
-  : Prettify<UnionToIntersection<FlattenEntries<S>>>
+  : 0 extends 1 & S
+    ? Record<never, never>
+    : [FlattenEntries<S>] extends [never]
+      ? Record<never, never>
+      : Prettify<UnionToIntersection<FlattenEntries<S>>>
 
 /** Map of dot-separated RPC method names to their `MethodDef` entries. */
 export type MethodMap<S> = {
@@ -56,30 +91,52 @@ export type NotifyMap<S> = {
 }
 
 /** Union of all callable dot-separated RPC method names in service `S`. */
-export type MethodNames<S> = keyof MethodMap<S> & string
+export type MethodNames<S> =
+  IsUntypedService<S> extends true ? string : keyof MethodMap<S> & string
 
 /** Union of all dot-separated outbound notification names in service `S`. */
-export type NotifyNames<S> = keyof NotifyMap<S> & string
+export type NotifyNames<S> =
+  IsUntypedService<S> extends true ? string : keyof NotifyMap<S> & string
 
 /** Infer the caller input parameter type for method `K` of service `S`. */
 export type InferInput<S, K extends MethodNames<S>> =
-  MethodMap<S>[K] extends MethodDef<infer Input, any> ? Input : never
+  IsUntypedService<S> extends true
+    ? JsonRpcParams | undefined
+    : K extends keyof MethodMap<S>
+      ? MethodMap<S>[K] extends MethodDef<infer Input, any>
+        ? Input
+        : never
+      : never
 
 /** Infer the success result value type for method `K` of service `S`. */
 export type InferOutput<S, K extends MethodNames<S>> =
-  MethodMap<S>[K] extends MethodDef<any, infer RawReturn>
-    ? Exclude<RawReturn, RpcErrorValue>
-    : never
+  IsUntypedService<S> extends true
+    ? unknown
+    : K extends keyof MethodMap<S>
+      ? MethodMap<S>[K] extends MethodDef<any, infer RawReturn>
+        ? NormalizeRpcResult<Exclude<RawReturn, RpcErrorValue>>
+        : never
+      : never
 
 /**
  * Infer the client error union for method `K` of service `S`
  * (returned `defineError` domain errors combined with `StandardRpcError`).
  */
 export type InferError<S, K extends MethodNames<S>> =
-  MethodMap<S>[K] extends MethodDef<any, infer RawReturn>
-    ? ToClientError<Extract<RawReturn, RpcErrorValue>> | StandardRpcError
-    : StandardRpcError
+  IsUntypedService<S> extends true
+    ? JsonRpcErrorObject
+    : K extends keyof MethodMap<S>
+      ? MethodMap<S>[K] extends MethodDef<any, infer RawReturn>
+        ? ToClientError<Extract<RawReturn, RpcErrorValue>> | StandardRpcError
+        : StandardRpcError
+      : StandardRpcError
 
 /** Infer the payload type for outbound notification `K` of service `S`. */
 export type InferNotify<S, K extends NotifyNames<S>> =
-  NotifyMap<S>[K] extends NotifyDef<infer Input, any> ? Input : never
+  IsUntypedService<S> extends true
+    ? unknown
+    : K extends keyof NotifyMap<S>
+      ? NotifyMap<S>[K] extends NotifyDef<infer Input, any>
+        ? Input
+        : never
+      : never

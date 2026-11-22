@@ -4,7 +4,11 @@ import { createProxy } from '../src/client/proxy'
 import { createPeer } from '../src/peer/peer'
 import { defineError } from '../src/protocol/errors'
 import type { StandardSchemaV1 } from '../src/protocol/standard-schema'
-import type { Result, StandardRpcError } from '../src/protocol/types'
+import type {
+  JsonRpcErrorObject,
+  Result,
+  StandardRpcError,
+} from '../src/protocol/types'
 import { createRpcContext, defineContext } from '../src/service/context'
 import { defineMethod, defineNotify } from '../src/service/method'
 import { defineService } from '../src/service/service'
@@ -75,11 +79,15 @@ const job = defineService(() => {
 
 const app = defineService(() => {
   const ping = defineMethod(() => 'pong' as const)
+  const noop = defineMethod(() => {})
+  const maybe = defineMethod(({ found }: { found: boolean }) =>
+    found ? 'yes' : undefined
+  )
   const opt = defineMethod((p?: { tag?: string }) => p?.tag ?? 'none')
   const log = defineMethod(({ message }: { message: string }) => {
     void message
   })
-  return { ping, opt, log, math, job }
+  return { ping, noop, maybe, opt, log, math, job }
 })
 
 type App = typeof app
@@ -90,17 +98,26 @@ describe('TypeScript 7 compile-time type gymnastics', () => {
     assertType<
       Equal<
         MethodNames<App>,
-        'ping' | 'opt' | 'log' | 'math.divide' | 'math.sum' | 'job.start'
+        | 'ping'
+        | 'noop'
+        | 'maybe'
+        | 'opt'
+        | 'log'
+        | 'math.divide'
+        | 'math.sum'
+        | 'job.start'
       >
     >(true)
     assertType<Equal<NotifyNames<App>, 'job.progress' | 'job.heartbeat'>>(true)
 
-    // 2. Standard Schema Input vs Output separation
+    // 2. Standard Schema Input vs Output separation & void/undefined -> null wire normalization
     assertType<
       Equal<InferInput<App, 'math.divide'>, { a: number; b?: number }>
     >(true)
     assertType<Equal<InferOutput<App, 'math.divide'>, number>>(true)
     assertType<Equal<InferOutput<App, 'ping'>, 'pong'>>(true)
+    assertType<Equal<InferOutput<App, 'noop'>, null>>(true)
+    assertType<Equal<InferOutput<App, 'maybe'>, 'yes' | null>>(true)
     assertType<
       Equal<
         InferNotify<App, 'job.progress'>,
@@ -180,11 +197,62 @@ describe('TypeScript 7 compile-time type gymnastics', () => {
       // Proxy deep paths
       const rpc = createProxy(client)
       const pPing = await rpc.ping()
+      const pNoop = await rpc.noop()
       const pDiv = await rpc.math.divide({ a: 10, b: 2 })
       const pSum = await rpc.math.sum([1, 2])
       assertType<Equal<typeof pPing, Result<'pong', StandardRpcError>>>(true)
+      assertType<Equal<typeof pNoop, Result<null, StandardRpcError>>>(true)
       assertType<Equal<typeof pDiv, Result<number, DivideErr>>>(true)
       assertType<Equal<typeof pSum, Result<number, StandardRpcError>>>(true)
+
+      // Untyped client ergonomics for external JSON-RPC 2.0 servers (Ethereum, LSP, MCP)
+      const extClient = createClient(transport)
+      const blockRes = await extClient.call('eth_blockNumber')
+      const balRes = await extClient.call(
+        'eth_getBalance',
+        ['0xabc', 'latest'],
+        { timeout: 1000 }
+      )
+      await extClient.call('eth_blockNumber', undefined, { timeout: 500 })
+      await extClient.notify('eth_subscribe', ['newHeads'])
+      await extClient.notify('ping')
+      assertType<Equal<typeof blockRes, Result<unknown, JsonRpcErrorObject>>>(
+        true
+      )
+      assertType<Equal<typeof balRes, Result<unknown, JsonRpcErrorObject>>>(
+        true
+      )
+      if (!blockRes.ok && blockRes.error.code === 4001) {
+        const _msg: string = blockRes.error.message
+        void _msg
+      }
+      const [extR0, extR1] = await extClient.batch((b) => [
+        b.call('eth_blockNumber'),
+        b.notify('ping'),
+      ])
+      assertType<Equal<typeof extR0, Result<unknown, JsonRpcErrorObject>>>(true)
+      assertType<Equal<typeof extR1, undefined>>(true)
+
+      const extRpc = createProxy(extClient)
+      const extProxyRes = await extRpc.eth_blockNumber?.()
+      const extNestedRes = await extRpc.user?.get?.({ id: 1 })
+      assertType<
+        Equal<
+          typeof extProxyRes,
+          Result<unknown, JsonRpcErrorObject> | undefined
+        >
+      >(true)
+      assertType<
+        Equal<
+          typeof extNestedRes,
+          Result<unknown, JsonRpcErrorObject> | undefined
+        >
+      >(true)
+
+      // @ts-expect-error untyped client still rejects primitive params per JSON-RPC 2.0
+      await extClient.call('eth_getBalance', '0xabc')
+      // @ts-expect-error untyped proxy still rejects primitive params
+      await extRpc.eth_getBalance?.(123)
 
       // Negative client & proxy assertions
       // @ts-expect-error unknown method name
@@ -220,8 +288,36 @@ describe('TypeScript 7 compile-time type gymnastics', () => {
 
       // @ts-expect-error invalid notification payload shape
       await serverPeer.notify('job.progress', { jobId: 123, percent: 50 })
+      // @ts-expect-error server-only peer (RemoteApp = never) cannot call unknown remote methods
+      await serverPeer.call('ping')
+      // @ts-expect-error client-only typed peer (LocalApp = never) rejects unknown notify names
+      await clientPeer.notify('does.not.exist')
       // @ts-expect-error cannot subscribe to RPC method via peer.on
       clientPeer.on('ping', () => {})
+
+      // Untyped peer ergonomics for external duplex JSON-RPC 2.0 servers (LSP, MCP)
+      const extPeer = createPeer(transport)
+      const initRes = await extPeer.call('initialize', { processId: null })
+      assertType<Equal<typeof initRes, Result<unknown, JsonRpcErrorObject>>>(
+        true
+      )
+      await extPeer.notify('initialized')
+      await extPeer.notify('textDocument/didOpen', { uri: 'file:///a.ts' })
+      extPeer.on('window/logMessage', (payload) => {
+        assertType<Equal<typeof payload, unknown>>(true)
+      })
+      const [toolsRes, notifSlot] = await extPeer.batch((b) => [
+        b.call('tools/list'),
+        b.notify('notifications/initialized'),
+      ])
+      assertType<Equal<typeof toolsRes, Result<unknown, JsonRpcErrorObject>>>(
+        true
+      )
+      assertType<Equal<typeof notifSlot, undefined>>(true)
+      // @ts-expect-error untyped peer rejects primitive params
+      await extPeer.call('initialize', 42)
+      // @ts-expect-error untyped peer rejects primitive notify params
+      await extPeer.notify('initialized', 'bad')
     }
     void checkPeer
 

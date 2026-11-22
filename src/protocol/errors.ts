@@ -1,6 +1,8 @@
 import {
   JSON_RPC_ERROR_CODES,
   type JsonRpcErrorObject,
+  type JsonRpcResponse,
+  type JsonRpcResponsePayload,
   type StandardJsonRpcErrorCode,
 } from './types'
 
@@ -272,4 +274,41 @@ export function isRpcErrorValue(value: unknown): value is RpcErrorValue {
     typeof candidate.code === 'number' &&
     typeof candidate.message === 'string'
   )
+}
+
+/**
+ * @internal Safely serialize a JSON-RPC 2.0 response or batch response.
+ * Falls back to `-32603 Internal error` per unserializable response item so
+ * wire adapters never crash or silently drop replies.
+ */
+export function stringifyJsonRpcResponse(
+  payload: JsonRpcResponsePayload
+): string {
+  try {
+    return JSON.stringify(payload)
+  } catch {
+    const fallback = internalError().toJSON()
+    if (Array.isArray(payload)) {
+      const items: string[] = new Array(payload.length)
+      for (let i = 0; i < payload.length; i++) {
+        const entry = payload[i] as JsonRpcResponse
+        try {
+          items[i] = JSON.stringify(entry)
+        } catch {
+          items[i] = JSON.stringify({
+            jsonrpc: '2.0',
+            id: entry.id,
+            error: fallback,
+          })
+        }
+      }
+      return `[${items.join(',')}]`
+    }
+    const single = payload as JsonRpcResponse
+    return JSON.stringify({
+      jsonrpc: '2.0',
+      id: single.id,
+      error: fallback,
+    })
+  }
 }

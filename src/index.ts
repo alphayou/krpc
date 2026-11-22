@@ -129,6 +129,7 @@ export type {
   NotifyMap,
   NotifyNames,
   ToClientError,
+  UntypedService,
 } from './service/types'
 
 export {
@@ -152,7 +153,11 @@ export {
   type KrpcClient,
 } from './client/client'
 
-export { createProxy, type RpcProxy } from './client/proxy'
+export {
+  createProxy,
+  type RpcProxy,
+  type UntypedRpcProxy,
+} from './client/proxy'
 
 export {
   createPeer,

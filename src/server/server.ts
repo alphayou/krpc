@@ -90,22 +90,68 @@ function errorResponse(
   return { jsonrpc: '2.0', id, error }
 }
 
+function normalizeWireResult(result: unknown): unknown {
+  if (result === undefined || result === null) {
+    return null
+  }
+  const type = typeof result
+  if (type === 'string' || type === 'number' || type === 'boolean') {
+    return result
+  }
+  if (type === 'bigint') {
+    throw new TypeError('Do not know how to serialize a BigInt')
+  }
+  if (type === 'function' || type === 'symbol') {
+    return null
+  }
+  const serialized = JSON.stringify(result)
+  return serialized === undefined ? null : result
+}
+
+function sanitizeWireError(error: JsonRpcErrorObject): JsonRpcErrorObject {
+  const { data } = error
+  if (data === undefined || data === null) {
+    return error
+  }
+  const type = typeof data
+  if (type === 'string' || type === 'number' || type === 'boolean') {
+    return error
+  }
+  if (type === 'bigint') {
+    return internalError().toJSON()
+  }
+  try {
+    JSON.stringify(data)
+    return error
+  } catch {
+    return internalError().toJSON()
+  }
+}
+
 function toWireError(
   caught: unknown,
   ctx: RpcContext,
   formatError?: ServerOptions['formatError']
 ): JsonRpcErrorObject {
   if (isRpcErrorValue(caught)) {
-    return caught.data === undefined
-      ? { code: caught.code, message: caught.message }
-      : { code: caught.code, message: caught.message, data: caught.data }
+    return sanitizeWireError(
+      caught.data === undefined
+        ? { code: caught.code, message: caught.message }
+        : { code: caught.code, message: caught.message, data: caught.data }
+    )
   }
   if (isJsonRpcError(caught)) {
-    return caught.toJSON()
+    return sanitizeWireError(caught.toJSON())
   }
   if (formatError) {
-    const formatted = formatError(caught, ctx)
-    return isJsonRpcError(formatted) ? formatted.toJSON() : formatted
+    try {
+      const formatted = formatError(caught, ctx)
+      return sanitizeWireError(
+        isJsonRpcError(formatted) ? formatted.toJSON() : formatted
+      )
+    } catch {
+      return internalError().toJSON()
+    }
   }
   return internalError().toJSON()
 }
@@ -337,6 +383,10 @@ export function createServer<S extends ServiceTree>(
         result = validated.value
       }
 
+      const wireResult = isNotification
+        ? undefined
+        : normalizeWireResult(result)
+
       for (const hook of after) {
         await hook(result, ctx)
       }
@@ -348,7 +398,7 @@ export function createServer<S extends ServiceTree>(
       return {
         jsonrpc: '2.0',
         id: id as JsonRpcId,
-        result: result === undefined ? null : result,
+        result: wireResult,
       }
     } catch (caught) {
       await runErrorHooks(errorHooks, caught, ctx)

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { createPeer } from '../../src/peer/peer'
 import {
   defineError,
   JsonRpcError,
@@ -7,11 +8,13 @@ import {
 import { isPlainObject } from '../../src/protocol/guards'
 import type { StandardSchemaV1 } from '../../src/protocol/standard-schema'
 import { JSON_RPC_ERROR_CODES } from '../../src/protocol/types'
-import { createServer } from '../../src/server/server'
+import { createServer, type RpcServer } from '../../src/server/server'
 import { defineContext } from '../../src/service/context'
 import { onAfter, onBefore, onError } from '../../src/service/hooks'
 import { defineMethod, defineNotify } from '../../src/service/method'
 import { defineService } from '../../src/service/service'
+import { createHttpHandler } from '../../src/transports/http'
+import { createMemoryDuplexPair } from '../../src/transports/memory'
 
 const divideInputSchema: StandardSchemaV1<
   { a: number; b?: number },
@@ -815,5 +818,287 @@ describe('createServer — batch execution, maxBatchSize, and concurrency', () =
       { jsonrpc: '2.0', id: 3, result: 3 },
       { jsonrpc: '2.0', id: 4, result: 4 },
     ])
+  })
+})
+
+describe('createServer — wire normalization and unserializable result safety', () => {
+  it('normalizes undefined, function, symbol, and toJSON()->undefined results to null', async () => {
+    const app = defineService(() => ({
+      undef: defineMethod(() => undefined),
+      fn: defineMethod(() => (() => {}) as unknown),
+      sym: defineMethod(() => Symbol('x') as unknown),
+      toJsonUndef: defineMethod(() => ({
+        toJSON() {
+          return undefined
+        },
+      })),
+    }))
+
+    const server = createServer(app)
+
+    for (const method of ['undef', 'fn', 'sym', 'toJsonUndef']) {
+      const res = await server.handleRaw(
+        JSON.stringify({ jsonrpc: '2.0', id: 1, method })
+      )
+      expect(res).toEqual({ jsonrpc: '2.0', id: 1, result: null })
+      expect(JSON.stringify(res)).toBe('{"jsonrpc":"2.0","id":1,"result":null}')
+    }
+  })
+
+  it('catches BigInt, circular objects, and throwing toJSON with onError and -32603 (single & batch)', async () => {
+    const errors: Array<{ method: string; err: unknown }> = []
+    const afters: string[] = []
+    const BadDataErr = defineError(-32010, 'Bad data').data<unknown>()
+
+    const app = defineService(() => {
+      onError((err, ctx) => {
+        errors.push({ method: ctx.method, err })
+      })
+      onAfter((_res, ctx) => {
+        afters.push(ctx.method)
+      })
+
+      return {
+        ok: defineMethod(() => 'fine'),
+        bigIntTop: defineMethod(() => 42n as unknown),
+        bigIntNested: defineMethod(() => ({ count: 42n }) as unknown),
+        circular: defineMethod(() => {
+          const obj: Record<string, unknown> = {}
+          obj.self = obj
+          return obj
+        }),
+        throwingToJson: defineMethod(() => ({
+          toJSON() {
+            throw new Error('toJSON failed')
+          },
+        })),
+        badErrDataBigInt: defineMethod(() => BadDataErr(1n)),
+        badErrDataCircular: defineMethod(() => {
+          const obj: Record<string, unknown> = {}
+          obj.self = obj
+          return BadDataErr(obj)
+        }),
+      }
+    })
+
+    const server = createServer(app)
+
+    for (const method of [
+      'bigIntTop',
+      'bigIntNested',
+      'circular',
+      'throwingToJson',
+    ]) {
+      const res = await server.handleRaw(
+        JSON.stringify({ jsonrpc: '2.0', id: method, method })
+      )
+      expect(res).toEqual({
+        jsonrpc: '2.0',
+        id: method,
+        error: {
+          code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+          message: 'Internal error',
+        },
+      })
+    }
+
+    expect(errors.map((e) => e.method)).toEqual([
+      'bigIntTop',
+      'bigIntNested',
+      'circular',
+      'throwingToJson',
+    ])
+    expect(afters).toEqual([])
+
+    // Unserializable error data falls back cleanly to -32603
+    expect(
+      await server.handle({ jsonrpc: '2.0', id: 1, method: 'badErrDataBigInt' })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+    expect(
+      await server.handle({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'badErrDataCircular',
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    // Notification returning BigInt still produces no response
+    expect(
+      await server.handle({ jsonrpc: '2.0', method: 'bigIntTop' })
+    ).toBeUndefined()
+
+    // Batch with valid + unserializable items preserves valid item and sanitizes bad items
+    const batchRes = await server.handleRaw(
+      JSON.stringify([
+        { jsonrpc: '2.0', id: 1, method: 'ok' },
+        { jsonrpc: '2.0', id: 2, method: 'bigIntNested' },
+        { jsonrpc: '2.0', id: 3, method: 'circular' },
+      ])
+    )
+    expect(batchRes).toEqual([
+      { jsonrpc: '2.0', id: 1, result: 'fine' },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        error: {
+          code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+          message: 'Internal error',
+        },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 3,
+        error: {
+          code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+          message: 'Internal error',
+        },
+      },
+    ])
+
+    // Throwing formatError is caught and sanitized to -32603
+    const badFormatterServer = createServer(
+      defineService(() => ({
+        boom: defineMethod(() => {
+          throw new Error('fail')
+        }),
+      })),
+      {
+        formatError() {
+          throw new Error('formatter crashed')
+        },
+      }
+    )
+    expect(
+      await badFormatterServer.handle({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'boom',
+      })
+    ).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+  })
+
+  it('safely serializes unserializable responses in createHttpHandler and createPeer even with custom RpcServer', async () => {
+    const rawServer: RpcServer = {
+      service: {},
+      async handle(payload) {
+        if (Array.isArray(payload)) {
+          return [
+            {
+              jsonrpc: '2.0',
+              id: (payload[0] as { id: number }).id,
+              result: 'ok',
+            },
+            {
+              jsonrpc: '2.0',
+              id: (payload[1] as { id: number }).id,
+              result: 99n,
+            },
+          ]
+        }
+        return {
+          jsonrpc: '2.0',
+          id: (payload as { id: number }).id,
+          result: 99n,
+        }
+      },
+      async handleRaw(text) {
+        return this.handle(JSON.parse(text))
+      },
+      resolveNotify() {
+        return undefined
+      },
+    }
+
+    // HTTP single & batch must never throw on unserializable response
+    const handler = createHttpHandler(rawServer)
+    const singleHttp = await handler(
+      new Request('https://rpc.test', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'x' }),
+      })
+    )
+    expect(singleHttp.status).toBe(200)
+    expect(await singleHttp.json()).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    const batchHttp = await handler(
+      new Request('https://rpc.test', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'good' },
+          { jsonrpc: '2.0', id: 2, method: 'bad' },
+        ]),
+      })
+    )
+    expect(batchHttp.status).toBe(200)
+    expect(await batchHttp.json()).toEqual([
+      { jsonrpc: '2.0', id: 1, result: 'ok' },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        error: {
+          code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+          message: 'Internal error',
+        },
+      },
+    ])
+
+    // Peer must never silently drop an unserializable response
+    const [tServer, tClient] = createMemoryDuplexPair()
+    const serverPeer = createPeer(tServer, rawServer)
+    const clientPeer = createPeer(tClient)
+
+    expect(await clientPeer.call('x')).toEqual({
+      ok: false,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    const [b0, b1] = await clientPeer.batch((b) => [
+      b.call('good'),
+      b.call('bad'),
+    ])
+    expect(b0).toEqual({ ok: true, value: 'ok' })
+    expect(b1).toEqual({
+      ok: false,
+      error: {
+        code: JSON_RPC_ERROR_CODES.INTERNAL_ERROR,
+        message: 'Internal error',
+      },
+    })
+
+    await clientPeer.close()
+    await serverPeer.close()
   })
 })

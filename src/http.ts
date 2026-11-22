@@ -7,6 +7,7 @@
 export {
   createHttpHandler,
   httpTransport,
+  type FetchLike,
   type HttpCredentials,
   type HttpHandlerOptions,
   type HttpHeadersInit,

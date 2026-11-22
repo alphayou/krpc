@@ -1,4 +1,7 @@
-import { KrpcTransportError } from '../protocol/errors'
+import {
+  KrpcTransportError,
+  stringifyJsonRpcResponse,
+} from '../protocol/errors'
 import type { JsonRpcResponsePayload } from '../protocol/types'
 import type { RpcServer } from '../server/server'
 import type { RpcContext } from '../service/context'
@@ -23,12 +26,18 @@ export type HttpHeadersInput =
 /** Fetch credentials mode (`"same-origin"`, `"include"`, or `"omit"`). */
 export type HttpCredentials = NonNullable<RequestInit['credentials']>
 
+/** Web Standard `fetch` function signature accepted by `HttpTransportOptions.fetch`. */
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit
+) => Promise<Response>
+
 /** Configuration options for `httpTransport`. */
 export interface HttpTransportOptions {
   /** Static headers or a sync/async factory invoked on each request. */
   readonly headers?: HttpHeadersInput
   /** Custom Fetch API implementation (defaults to `globalThis.fetch`). */
-  readonly fetch?: typeof fetch
+  readonly fetch?: FetchLike
   /** Fetch credentials mode (`"same-origin"`, `"include"`, or `"omit"`). */
   readonly credentials?: HttpCredentials
 }
@@ -285,7 +294,7 @@ export function createHttpHandler(
       return new Response(null, { status: 204 })
     }
 
-    return new Response(JSON.stringify(responsePayload), {
+    return new Response(stringifyJsonRpcResponse(responsePayload), {
       status: 200,
       headers: { 'content-type': JSON_CONTENT_TYPE },
     })

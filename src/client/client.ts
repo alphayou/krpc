@@ -16,6 +16,7 @@ import type {
   InferInput,
   InferOutput,
   MethodNames,
+  UntypedService,
 } from '../service/types'
 import type { ClientTransport } from '../transports/types'
 
@@ -83,7 +84,7 @@ export type BatchResults<T extends readonly BatchItem[]> = {
 }
 
 /** Builder passed to `client.batch((b) => [...])` to construct typed batch entries. */
-export interface BatchBuilder<App> {
+export interface BatchBuilder<App = UntypedService> {
   /** Enqueue a JSON-RPC Request in the batch. */
   call<K extends MethodNames<App>>(
     method: K,
@@ -105,7 +106,7 @@ export interface BatchBuilder<App> {
 }
 
 /** Type-safe JSON-RPC 2.0 client created by `createClient`. */
-export interface KrpcClient<App> {
+export interface KrpcClient<App = UntypedService> {
   /** Phantom service type carrier enabling `createProxy(client)` type inference. */
   readonly _app?: App
   /** Invoke an RPC method and resolve to a typed `Result` (throws only on infrastructure errors). */
@@ -242,7 +243,7 @@ export const batchBuilder = {
 }
 
 /** Create a type-safe JSON-RPC 2.0 client over any one-way `ClientTransport`. */
-export function createClient<App>(
+export function createClient<App = UntypedService>(
   transport: ClientTransport,
   options: ClientOptions = {}
 ): KrpcClient<App> {

@@ -12,6 +12,7 @@ import {
   invalidRequest,
   KrpcTransportError,
   methodNotFound,
+  stringifyJsonRpcResponse,
 } from '../protocol/errors'
 import {
   isJsonRpcErrorResponse,
@@ -29,6 +30,7 @@ import {
   type JsonRpcParams,
   type JsonRpcRequest,
   type JsonRpcResponse,
+  type JsonRpcResponsePayload,
   type JsonRpcSingleRequest,
   type Result,
 } from '../protocol/types'
@@ -53,6 +55,7 @@ import type {
   InferOutput,
   MethodNames,
   NotifyNames,
+  UntypedService,
 } from '../service/types'
 import type { DuplexTransport } from '../transports/types'
 
@@ -80,10 +83,7 @@ export type PeerNotifyHandler<Payload> = [Payload] extends [void | undefined]
   : (payload: Payload) => void | Promise<void>
 
 /** Full-duplex JSON-RPC 2.0 peer created by `createPeer`. */
-export interface KrpcPeer<
-  RemoteApp extends ServiceTree = never,
-  LocalApp extends ServiceTree = never,
-> {
+export interface KrpcPeer<RemoteApp = UntypedService, LocalApp = never> {
   /** Phantom remote service type carrier enabling `createProxy(peer)` type inference. */
   readonly _app?: RemoteApp
   /** Invoke a remote RPC method and resolve to a typed `Result`. */
@@ -142,16 +142,33 @@ function isRpcServer(value: unknown): value is RpcServer<any> {
 
 /**
  * Create a full-duplex JSON-RPC 2.0 peer over any `DuplexTransport`
- * (WebSocket, Web Streams, or in-memory duplex pair).
+ * (WebSocket, Web Streams, or in-memory duplex pair), defaulting to
+ * `UntypedService` when calling an external JSON-RPC 2.0 server without an `App` type.
+ */
+export function createPeer<RemoteApp = UntypedService>(
+  transport: DuplexTransport,
+  local?: undefined,
+  options?: PeerOptions
+): KrpcPeer<RemoteApp, never>
+
+/**
+ * Create a full-duplex JSON-RPC 2.0 peer serving a local `ServiceTree` or `RpcServer`
+ * over any `DuplexTransport`.
  */
 export function createPeer<
-  RemoteApp extends ServiceTree = never,
-  LocalApp extends ServiceTree = never,
+  RemoteApp = never,
+  LocalApp extends ServiceTree = ServiceTree,
 >(
   transport: DuplexTransport,
-  local?: LocalApp | RpcServer<LocalApp>,
+  local: LocalApp | RpcServer<LocalApp>,
+  options?: PeerOptions
+): KrpcPeer<RemoteApp, LocalApp>
+
+export function createPeer(
+  transport: DuplexTransport,
+  local?: ServiceTree | RpcServer<any>,
   options: PeerOptions = {}
-): KrpcPeer<RemoteApp, LocalApp> {
+): KrpcPeer<any, any> {
   const defaultTimeout = options.timeout
   let seq = 0
   const nextId = options.nextId ?? (() => ++seq)
@@ -188,6 +205,18 @@ export function createPeer<
     if (closed) return
     try {
       const maybePromise = transport.send(JSON.stringify(payload))
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        maybePromise.catch(() => {})
+      }
+    } catch {
+      // Transport closed while replying to an inbound frame.
+    }
+  }
+
+  const sendResponseBestEffort = (payload: JsonRpcResponsePayload): void => {
+    if (closed) return
+    try {
+      const maybePromise = transport.send(stringifyJsonRpcResponse(payload))
       if (maybePromise && typeof maybePromise.catch === 'function') {
         maybePromise.catch(() => {})
       }
@@ -337,7 +366,7 @@ export function createPeer<
       if (server) {
         const response = await server.handle(value, handleOpts)
         if (response !== undefined) {
-          sendFrameBestEffort(response)
+          sendResponseBestEffort(response)
         }
         return
       }
@@ -381,7 +410,7 @@ export function createPeer<
     if (server) {
       const response = await server.handle(value, handleOpts)
       if (response !== undefined) {
-        sendFrameBestEffort(response)
+        sendResponseBestEffort(response)
       }
       return
     }
@@ -472,10 +501,10 @@ export function createPeer<
   }
 
   const batch = async <const T extends readonly BatchItem[]>(
-    build: (b: BatchBuilder<RemoteApp>) => T,
+    build: (b: BatchBuilder<any>) => T,
     callOptions?: CallOptions
   ): Promise<BatchResults<T>> => {
-    const items = build(batchBuilder as BatchBuilder<RemoteApp>)
+    const items = build(batchBuilder as BatchBuilder<any>)
     if (items.length === 0) {
       return [] as unknown as BatchResults<T>
     }
@@ -627,10 +656,10 @@ export function createPeer<
   }
 
   return {
-    call: call as KrpcPeer<RemoteApp, LocalApp>['call'],
+    call: call as KrpcPeer<any, any>['call'],
     batch,
-    notify: notify as KrpcPeer<RemoteApp, LocalApp>['notify'],
-    on: on as KrpcPeer<RemoteApp, LocalApp>['on'],
+    notify: notify as KrpcPeer<any, any>['notify'],
+    on: on as KrpcPeer<any, any>['on'],
     close,
   }
 }

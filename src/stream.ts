@@ -1,7 +1,7 @@
 /**
  * Framed Web Streams duplex transport (`streamTransport`) and NDJSON / Content-Length helpers for `krpc`.
  *
- * @module @alphayou-ai/krpc/stream
+ * @module @alphayou/krpc/stream
  */
 
 export {

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-11-23
 
-Initial public release of `krpc` (`@alphayou-ai/krpc`).
+Initial public release of `krpc` (`@alphayou/krpc`).
 
 ### Added
 
@@ -21,12 +21,12 @@ Initial public release of `krpc` (`@alphayou-ai/krpc`).
   - `createPeer` for full-duplex RPC and typed push notifications (`ctx.notify` with silent-drop `Promise<boolean>` and optional target `to` client ID, `ctx.clientId`, `peer.notify`, `peer.on`).
   - `batchTransport` wrapper to automatically coalesce concurrent `client.call` and `client.notify` calls into JSON-RPC 2.0 batches.
 - **7 pure Web Standard entry points**:
-  - `@alphayou-ai/krpc`: Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, `createMemoryTransport`, `createMemoryDuplexPair`, `isDuplexTransport`.
-  - `@alphayou-ai/krpc/http`: Fetch-based `httpTransport` (with `FetchLike` custom `fetch` support) and `createHttpHandler` with incremental `maxBodySize` enforcement and `waitUntil` support for `ctx.after`.
-  - `@alphayou-ai/krpc/ws`: Web Standard `wsTransport` (with `CONNECTING` send queue), `createWsServerTransport` bridge, and `createWsHandler` server callback adapter.
-  - `@alphayou-ai/krpc/bun`: Unified HTTP + WebSocket `createBunHandler` adapter for `Bun.serve` using pure structural types (zero Bun-only runtime imports).
-  - `@alphayou-ai/krpc/stream`: Web Streams `streamTransport` with `ndjson` and `content-length` framing helpers.
-  - `@alphayou-ai/krpc/stdio`: Framed `stdioTransport` for `process.stdin` / `process.stdout` and subprocess pipes (supporting both Web Streams and Node / Bun stream handles with zero `node:*` imports).
-  - `@alphayou-ai/krpc/port`: `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`.
+  - `@alphayou/krpc`: Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, `createMemoryTransport`, `createMemoryDuplexPair`, `isDuplexTransport`.
+  - `@alphayou/krpc/http`: Fetch-based `httpTransport` (with `FetchLike` custom `fetch` support) and `createHttpHandler` with incremental `maxBodySize` enforcement and `waitUntil` support for `ctx.after`.
+  - `@alphayou/krpc/ws`: Web Standard `wsTransport` (with `CONNECTING` send queue), `createWsServerTransport` bridge, and `createWsHandler` server callback adapter.
+  - `@alphayou/krpc/bun`: Unified HTTP + WebSocket `createBunHandler` adapter for `Bun.serve` using pure structural types (zero Bun-only runtime imports).
+  - `@alphayou/krpc/stream`: Web Streams `streamTransport` with `ndjson` and `content-length` framing helpers.
+  - `@alphayou/krpc/stdio`: Framed `stdioTransport` for `process.stdin` / `process.stdout` and subprocess pipes (supporting both Web Streams and Node / Bun stream handles with zero `node:*` imports).
+  - `@alphayou/krpc/port`: `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`.
 - **Strict JSON-RPC 2.0 compliance**: Verified against all Section 7 specification examples, including Section 5 `void`/`undefined` -> `null` wire normalization, strict `id` and `params` validation, `rpc.` reserved method rejection, empty/mixed batch handling, and safe `-32603` fallbacks for unserializable values.
 - **Zero dependencies & tree-shaking**: Pure ESM + `.d.mts` output with `sideEffects: false`, zero runtime dependencies, and a `~5 kB` minified client bundle (`createClient` + `httpTransport`), portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.

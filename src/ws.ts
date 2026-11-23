@@ -1,7 +1,7 @@
 /**
  * WebSocket duplex transport (`wsTransport`, `createWsServerTransport`, and `createWsHandler`) for `krpc`.
  *
- * @module @alphayou-ai/krpc/ws
+ * @module @alphayou/krpc/ws
  */
 
 export {

@@ -31,13 +31,13 @@ bun install
 ```text
 krpc/
 ├── src/
-│   ├── index.ts          # "@alphayou-ai/krpc" entry point
-│   ├── http.ts           # "@alphayou-ai/krpc/http" entry point
-│   ├── ws.ts             # "@alphayou-ai/krpc/ws" entry point
-│   ├── bun.ts            # "@alphayou-ai/krpc/bun" entry point
-│   ├── stream.ts         # "@alphayou-ai/krpc/stream" entry point
-│   ├── stdio.ts          # "@alphayou-ai/krpc/stdio" entry point
-│   ├── port.ts           # "@alphayou-ai/krpc/port" entry point
+│   ├── index.ts          # "@alphayou/krpc" entry point
+│   ├── http.ts           # "@alphayou/krpc/http" entry point
+│   ├── ws.ts             # "@alphayou/krpc/ws" entry point
+│   ├── bun.ts            # "@alphayou/krpc/bun" entry point
+│   ├── stream.ts         # "@alphayou/krpc/stream" entry point
+│   ├── stdio.ts          # "@alphayou/krpc/stdio" entry point
+│   ├── port.ts           # "@alphayou/krpc/port" entry point
 │   ├── protocol/         # JSON-RPC 2.0 types, guards, errors, Standard Schema v1
 │   ├── service/          # defineService, defineMethod, defineNotify, defineContext, hooks
 │   ├── server/           # createServer (dispatch, hooks, batching, error sanitization)

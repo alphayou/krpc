@@ -1,7 +1,7 @@
 /**
  * Fetch-based HTTP transport (`httpTransport` and `createHttpHandler`) for `krpc`.
  *
- * @module @alphayou-ai/krpc/http
+ * @module @alphayou/krpc/http
  */
 
 export {

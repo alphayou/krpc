@@ -3,7 +3,7 @@
  *
  * Uses pure structural TypeScript types with zero Bun-only runtime imports.
  *
- * @module @alphayou-ai/krpc/bun
+ * @module @alphayou/krpc/bun
  */
 
 export {

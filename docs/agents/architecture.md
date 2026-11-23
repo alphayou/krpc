@@ -4,13 +4,13 @@
 
 ```text
 src/
-├── index.ts              # "@alphayou/krpc" entry point (core DSL, client/server/peer, memory & batchTransport)
-├── http.ts               # "@alphayou/krpc/http" entry point
-├── ws.ts                 # "@alphayou/krpc/ws" entry point
-├── bun.ts                # "@alphayou/krpc/bun" entry point (pure structural Bun.serve HTTP + WS adapter)
-├── stream.ts             # "@alphayou/krpc/stream" entry point
-├── stdio.ts              # "@alphayou/krpc/stdio" entry point (pure structural stdio & subprocess pipe adapter)
-├── port.ts               # "@alphayou/krpc/port" entry point
+├── index.ts              # "@alphayou-ai/krpc" entry point (core DSL, client/server/peer, memory & batchTransport)
+├── http.ts               # "@alphayou-ai/krpc/http" entry point
+├── ws.ts                 # "@alphayou-ai/krpc/ws" entry point
+├── bun.ts                # "@alphayou-ai/krpc/bun" entry point (pure structural Bun.serve HTTP + WS adapter)
+├── stream.ts             # "@alphayou-ai/krpc/stream" entry point
+├── stdio.ts              # "@alphayou-ai/krpc/stdio" entry point (pure structural stdio & subprocess pipe adapter)
+├── port.ts               # "@alphayou-ai/krpc/port" entry point
 ├── protocol/             # JSON-RPC 2.0 wire types, guards, errors, inline Standard Schema v1
 ├── service/              # defineService, defineMethod, defineNotify, defineContext, on* hooks, type utils
 ├── server/               # createServer (dispatch, hooks, batch limits, ctx.after, connect/notify registry)

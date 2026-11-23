@@ -1,7 +1,7 @@
 /**
  * `MessagePort` and Web Worker duplex transport (`portTransport`) for `krpc`.
  *
- * @module @alphayou/krpc/port
+ * @module @alphayou-ai/krpc/port
  */
 
 export { portTransport, type MessagePortLike } from './transports/port'

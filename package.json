@@ -1,5 +1,5 @@
 {
-  "name": "@alphayou/krpc",
+  "name": "@alphayou-ai/krpc",
   "version": "0.1.0",
   "description": "Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Standard APIs",
   "license": "MPL-2.0",
@@ -70,7 +70,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "registry": "https://registry.npmjs.com/"
   },
   "scripts": {
     "build": "tsdown",

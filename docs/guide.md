@@ -5,11 +5,11 @@
 ## Installation
 
 ```bash
-bun add @alphayou/krpc
+bun add @alphayou-ai/krpc
 # or
-pnpm add @alphayou/krpc
+pnpm add @alphayou-ai/krpc
 # or
-npm install @alphayou/krpc
+npm install @alphayou-ai/krpc
 ```
 
 ## Defining Services & Methods
@@ -17,7 +17,7 @@ npm install @alphayou/krpc
 Build your API with `defineService` and `defineMethod`. Nested services map automatically to dot-separated JSON-RPC method names (`"math.add"`, `"math.divide"`).
 
 ```ts
-import { defineMethod, defineService } from '@alphayou/krpc'
+import { defineMethod, defineService } from '@alphayou-ai/krpc'
 
 const math = defineService(() => {
   const add = defineMethod(({ a, b }: { a: number; b: number }) => a + b)
@@ -47,7 +47,7 @@ Handlers that return `void` or `undefined` serialize as `"result": null` on the 
 Pass any [Standard Schema v1](https://standardschema.dev/) validator (such as Zod, Valibot, or ArkType) as the first argument to `defineMethod`. `krpc` infers the **input** type on the client and the validated **output** type inside the handler.
 
 ```ts
-import { defineMethod } from '@alphayou/krpc'
+import { defineMethod } from '@alphayou-ai/krpc'
 import { z } from 'zod'
 
 const greet = defineMethod(
@@ -69,7 +69,7 @@ const greet = defineMethod(
 Declare domain errors with `defineError` and return them directly from handlers. `krpc` automatically splits returned values into the client's `Result` union—no separate error list required.
 
 ```ts
-import { defineError, defineMethod } from '@alphayou/krpc'
+import { defineError, defineMethod } from '@alphayou-ai/krpc'
 
 const DivByZero = defineError(-32002, 'Division by zero')
 const Overflow = defineError(-32003, 'Overflow').data<{ max: number }>()
@@ -111,7 +111,7 @@ import {
   defineService,
   onBefore,
   onError,
-} from '@alphayou/krpc'
+} from '@alphayou-ai/krpc'
 
 const Headers = defineContext<Headers>() // optional: ctx.get -> Headers | undefined
 const Locale = defineContext('en-US') // defaulted: ctx.get -> string
@@ -146,11 +146,11 @@ const account = defineService(() => {
 
 ## Creating a Server & Client
 
-Wire up a server with `createServer` and expose it over any transport (such as `@alphayou/krpc/http` or `createMemoryTransport` for tests):
+Wire up a server with `createServer` and expose it over any transport (such as `@alphayou-ai/krpc/http` or `createMemoryTransport` for tests):
 
 ```ts
-import { createClient, createServer } from '@alphayou/krpc'
-import { createHttpHandler, httpTransport } from '@alphayou/krpc/http'
+import { createClient, createServer } from '@alphayou-ai/krpc'
+import { createHttpHandler, httpTransport } from '@alphayou-ai/krpc/http'
 import { app, type App } from './app'
 
 // Server
@@ -204,14 +204,14 @@ const [addRes, sumRes, logRes] = await client.batch((b) => [
 // logRes: undefined
 ```
 
-To automatically coalesce concurrent `client.call` / `client.notify` calls without rewriting call sites into `client.batch`, wrap your transport with [`batchTransport`](./transports.md#auto-batching-batchtransport-in-alphayoukrpc).
+To automatically coalesce concurrent `client.call` / `client.notify` calls without rewriting call sites into `client.batch`, wrap your transport with [`batchTransport`](./transports.md#auto-batching-batchtransport-in-alphayou-aikrpc).
 
 ### Proxy Client
 
 If you prefer property-style calls over string method names, wrap any `KrpcClient` or `KrpcPeer` with `createProxy`:
 
 ```ts
-import { createProxy } from '@alphayou/krpc'
+import { createProxy } from '@alphayou-ai/krpc'
 
 const rpc = createProxy(client)
 const res = await rpc.math.add({ a: 10, b: 2 })
@@ -222,8 +222,8 @@ const res = await rpc.math.add({ a: 10, b: 2 })
 To call a third-party JSON-RPC 2.0 server (such as Ethereum, LSP, or MCP) without a `defineService` schema, omit the `<App>` type parameter on `createClient` (or client-only `createPeer`):
 
 ```ts
-import { createClient, createProxy } from '@alphayou/krpc'
-import { httpTransport } from '@alphayou/krpc/http'
+import { createClient, createProxy } from '@alphayou-ai/krpc'
+import { httpTransport } from '@alphayou-ai/krpc/http'
 
 const client = createClient(httpTransport('https://rpc.example.com'))
 
@@ -253,7 +253,7 @@ await rpc.eth_blockNumber()
 On the server, unhandled exceptions and non-JSON-serializable handler results (`BigInt`, circular objects, or throwing `toJSON`) are caught, passed to `onError` / `formatError`, and returned as `-32603` (`Internal error`) without breaking sibling batch items or crashing the transport.
 
 ```ts
-import { KrpcTimeoutError, KrpcTransportError } from '@alphayou/krpc'
+import { KrpcTimeoutError, KrpcTransportError } from '@alphayou-ai/krpc'
 
 try {
   const res = await client.call('math.divide', { a: 10, b: 0 })
@@ -271,7 +271,7 @@ try {
 
 ## Full-Duplex Peers, Early Reply & Push Notifications
 
-For bidirectional transports (`@alphayou/krpc/ws`, `@alphayou/krpc/bun`, `@alphayou/krpc/stream`, `@alphayou/krpc/stdio`, `@alphayou/krpc/port`, or `createMemoryDuplexPair`), declare outbound notifications with `defineNotify`.
+For bidirectional transports (`@alphayou-ai/krpc/ws`, `@alphayou-ai/krpc/bun`, `@alphayou-ai/krpc/stream`, `@alphayou-ai/krpc/stdio`, `@alphayou-ai/krpc/port`, or `createMemoryDuplexPair`), declare outbound notifications with `defineNotify`.
 
 ### Early Reply (`ctx.after`) & Silent-Drop `ctx.notify`
 
@@ -286,9 +286,9 @@ import {
   defineMethod,
   defineNotify,
   defineService,
-} from '@alphayou/krpc'
-import { createBunHandler } from '@alphayou/krpc/bun'
-import { wsTransport } from '@alphayou/krpc/ws'
+} from '@alphayou-ai/krpc'
+import { createBunHandler } from '@alphayou-ai/krpc/bun'
+import { wsTransport } from '@alphayou-ai/krpc/ws'
 
 const jobs = defineService(() => {
   const progress = defineNotify<{ jobId: string; percent: number }>()
@@ -352,7 +352,7 @@ import type {
   InferOutput,
   MethodNames,
   NotifyNames,
-} from '@alphayou/krpc'
+} from '@alphayou-ai/krpc'
 import type { App } from './app'
 
 type Methods = MethodNames<App> // "ping" | "log" | "math.add" | ...

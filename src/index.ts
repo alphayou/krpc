@@ -1,7 +1,7 @@
 /**
  * Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Standard APIs.
  *
- * @module @alphayou/krpc
+ * @module @alphayou-ai/krpc
  */
 
 export {

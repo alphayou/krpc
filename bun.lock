@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@alphayou/krpc",
+      "name": "@alphayou-ai/krpc",
       "devDependencies": {
         "@types/bun": "latest",
         "husky": "^9.1.7",

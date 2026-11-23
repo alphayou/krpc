@@ -15,7 +15,7 @@
 ## Core Rules
 
 - **KISS**: Keep code, APIs, tests, and docs minimal, transparent, and readable (antfu-style clarity). Avoid unnecessary abstractions or wrappers.
-- **Zero-dep Web Standard `src/`**: `src/` must have zero runtime dependencies and use only ESNext / Web Standard APIs (no Bun-only or Node-only runtime imports; `@alphayou/krpc/bun` and `@alphayou/krpc/stdio` use pure structural TypeScript types). `tests/` may use `bun:test` and `Bun.serve`.
+- **Zero-dep Web Standard `src/`**: `src/` must have zero runtime dependencies and use only ESNext / Web Standard APIs (no Bun-only or Node-only runtime imports; `@alphayou-ai/krpc/bun` and `@alphayou-ai/krpc/stdio` use pure structural TypeScript types). `tests/` may use `bun:test` and `Bun.serve`.
 - **English only**: Write all code comments, JSDoc, docs, and commits in crisp English.
 - **Safe deletion**: Use `trash` instead of `rm` when deleting files.
 

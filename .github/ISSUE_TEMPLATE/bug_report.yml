@@ -47,10 +47,10 @@ body:
       label: Environment
       description: Relevant versions and transport setup.
       placeholder: |
-        - krpc:
+        - @alphayou/krpc:
         - TypeScript:
         - Runtime version:
-        - Transport: krpc / krpc/http / krpc/ws / krpc/stream / custom
+        - Transport: @alphayou/krpc / @alphayou/krpc/http / @alphayou/krpc/ws / @alphayou/krpc/bun / @alphayou/krpc/stream / @alphayou/krpc/stdio / @alphayou/krpc/port / custom
 
   - type: checkboxes
     id: checklist

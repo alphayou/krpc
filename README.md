@@ -13,16 +13,16 @@ Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Stan
 - **Type-safe & external-server ready**: Automatic `Result` / domain-error splitting, compile-time structured `params` enforcement, variadic `batch` tuples, and recursive `createProxy`—or omit `<App>` to call any external JSON-RPC 2.0 server (Ethereum, LSP, MCP).
 - **Standard Schema v1**: Plug in Zod, Valibot, ArkType, or any [Standard Schema v1](https://standardschema.dev/) validator with zero runtime dependencies.
 - **Result vs. Throw boundary**: Protocol and domain errors always return `{ ok: false, error }`; infrastructure errors throw `KrpcTransportError`, `KrpcTimeoutError`, or `AbortError`.
-- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`krpc`, `krpc/http`, `krpc/ws`, `krpc/bun`, `krpc/stream`, `krpc/stdio`, `krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
+- **Tiny, pure Web Standard transports**: Zero dependencies and `~5 kB` minified client bundle (`createClient` + `httpTransport`), with tree-shakeable ESM subpaths (`@alphayou/krpc`, `@alphayou/krpc/http`, `@alphayou/krpc/ws`, `@alphayou/krpc/bun`, `@alphayou/krpc/stream`, `@alphayou/krpc/stdio`, `@alphayou/krpc/port`) portable across Bun, Node.js, Deno, Cloudflare Workers, and browsers.
 
 ## Install
 
 ```bash
-bun add krpc
+bun add @alphayou/krpc
 # or
-pnpm add krpc
+pnpm add @alphayou/krpc
 # or
-npm install krpc
+npm install @alphayou/krpc
 ```
 
 ## Quick Start
@@ -37,7 +37,7 @@ import {
   defineNotify,
   defineService,
   onBefore,
-} from 'krpc'
+} from '@alphayou/krpc'
 
 export const Headers = defineContext<Headers>()
 const CurrentUser = defineContext<{ id: string }>()
@@ -95,11 +95,11 @@ export const app = defineService(() => {
 export type App = typeof app
 ```
 
-### 2. Serve over HTTP & WebSocket (`krpc/http` or `krpc/bun`)
+### 2. Serve over HTTP & WebSocket (`@alphayou/krpc/http` or `@alphayou/krpc/bun`)
 
 ```ts
-import { createServer } from 'krpc'
-import { createBunHandler } from 'krpc/bun'
+import { createServer } from '@alphayou/krpc'
+import { createBunHandler } from '@alphayou/krpc/bun'
 import { app, Headers } from './app'
 
 const server = createServer(app, { maxBatchSize: 50, batchConcurrency: 10 })
@@ -113,13 +113,13 @@ export default createBunHandler(server, {
 })
 ```
 
-> Use `createHttpHandler` from `krpc/http` for Cloudflare Workers, Deno, Hono, or HTTP-only endpoints, and `createWsHandler` from `krpc/ws` for standalone WebSocket servers.
+> Use `createHttpHandler` from `@alphayou/krpc/http` for Cloudflare Workers, Deno, Hono, or HTTP-only endpoints, and `createWsHandler` from `@alphayou/krpc/ws` for standalone WebSocket servers.
 
 ### 3. Call with Client, Batch & Proxy
 
 ```ts
-import { createClient, createProxy } from 'krpc'
-import { httpTransport } from 'krpc/http'
+import { createClient, createProxy } from '@alphayou/krpc'
+import { httpTransport } from '@alphayou/krpc/http'
 import { Overflow, type App } from './app'
 
 const client = createClient<App>(httpTransport('http://localhost:3000/rpc'), {
@@ -153,11 +153,11 @@ const rpc = createProxy(client)
 await rpc.math.divide({ a: 10, b: 2 })
 ```
 
-### 4. Full-Duplex Peer & Push Notifications (`krpc/ws`)
+### 4. Full-Duplex Peer & Push Notifications (`@alphayou/krpc/ws`)
 
 ```ts
-import { createPeer } from 'krpc'
-import { wsTransport } from 'krpc/ws'
+import { createPeer } from '@alphayou/krpc'
+import { wsTransport } from '@alphayou/krpc/ws'
 import type { App } from './app'
 
 const peer = createPeer<App>(
@@ -175,15 +175,15 @@ await peer.close()
 
 ## Entry Points
 
-| Import        | Exports                                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------------------- |
-| `krpc`        | Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, memory transports |
-| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                       |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                |
-| `krpc/bun`    | `createBunHandler` (unified HTTP + WebSocket adapter for `Bun.serve`)                                      |
-| `krpc/stream` | `streamTransport`, `ndjson` and `content-length` framing helpers                                           |
-| `krpc/stdio`  | `stdioTransport` for `process.stdin` / `process.stdout` and subprocess pipes                               |
-| `krpc/port`   | `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`                              |
+| Import                  | Exports                                                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `@alphayou/krpc`        | Core DSL, `createServer`, `createClient`, `createProxy`, `createPeer`, `batchTransport`, memory transports |
+| `@alphayou/krpc/http`   | `httpTransport`, `createHttpHandler`                                                                       |
+| `@alphayou/krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                |
+| `@alphayou/krpc/bun`    | `createBunHandler` (unified HTTP + WebSocket adapter for `Bun.serve`)                                      |
+| `@alphayou/krpc/stream` | `streamTransport`, `ndjson` and `content-length` framing helpers                                           |
+| `@alphayou/krpc/stdio`  | `stdioTransport` for `process.stdin` / `process.stdout` and subprocess pipes                               |
+| `@alphayou/krpc/port`   | `portTransport` for `MessagePort`, `Worker`, and `DedicatedWorkerGlobalScope`                              |
 
 ## Documentation
 

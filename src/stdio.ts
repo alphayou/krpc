@@ -1,7 +1,7 @@
 /**
  * Framed stdio and subprocess pipe duplex transport (`stdioTransport`) for `krpc`.
  *
- * @module krpc/stdio
+ * @module @alphayou/krpc/stdio
  */
 
 export {

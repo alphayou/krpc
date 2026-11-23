@@ -1,5 +1,5 @@
 {
-  "name": "krpc",
+  "name": "@alphayou/krpc",
   "version": "0.1.0",
   "description": "Type-safe, zero-dependency JSON-RPC 2.0 library for TypeScript built on Web Standard APIs",
   "license": "MPL-2.0",

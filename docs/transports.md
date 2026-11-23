@@ -7,17 +7,17 @@
 
 ## Built-in Transports
 
-| Entry Point   | Exports                                                                                                                 | Model           | Best For                                          |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------------- |
-| `krpc`        | `createMemoryTransport`, `createMemoryDuplexPair`, `batchTransport`, `isDuplexTransport`                                | Client & Duplex | Unit tests, SSR, in-process calls, auto-batching  |
-| `krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers   |
-| `krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                             | Duplex          | Real-time apps, server push, bidirectional RPC    |
-| `krpc/bun`    | `createBunHandler`                                                                                                      | HTTP + Duplex   | Unified HTTP + WebSocket `Bun.serve` endpoints    |
-| `krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | Web Streams, pipes, IPC, LSP-style framing        |
-| `krpc/stdio`  | `stdioTransport`                                                                                                        | Duplex          | CLI servers (`stdin`/`stdout`), subprocess pipes  |
-| `krpc/port`   | `portTransport`                                                                                                         | Duplex          | `MessageChannel`, Web Workers, `MessagePort` APIs |
+| Entry Point             | Exports                                                                                                                 | Model           | Best For                                          |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------- | ------------------------------------------------- |
+| `@alphayou/krpc`        | `createMemoryTransport`, `createMemoryDuplexPair`, `batchTransport`, `isDuplexTransport`                                | Client & Duplex | Unit tests, SSR, in-process calls, auto-batching  |
+| `@alphayou/krpc/http`   | `httpTransport`, `createHttpHandler`                                                                                    | Client + Fetch  | `Bun.serve`, Cloudflare Workers, Hono, browsers   |
+| `@alphayou/krpc/ws`     | `wsTransport`, `createWsServerTransport`, `createWsHandler`                                                             | Duplex          | Real-time apps, server push, bidirectional RPC    |
+| `@alphayou/krpc/bun`    | `createBunHandler`                                                                                                      | HTTP + Duplex   | Unified HTTP + WebSocket `Bun.serve` endpoints    |
+| `@alphayou/krpc/stream` | `streamTransport`, `encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder` | Duplex          | Web Streams, pipes, IPC, LSP-style framing        |
+| `@alphayou/krpc/stdio`  | `stdioTransport`                                                                                                        | Duplex          | CLI servers (`stdin`/`stdout`), subprocess pipes  |
+| `@alphayou/krpc/port`   | `portTransport`                                                                                                         | Duplex          | `MessageChannel`, Web Workers, `MessagePort` APIs |
 
-## Memory (`krpc`)
+## Memory (`@alphayou/krpc`)
 
 Connect a client or peer directly to a server in memory without sockets or HTTP:
 
@@ -28,7 +28,7 @@ import {
   createMemoryTransport,
   createPeer,
   createServer,
-} from 'krpc'
+} from '@alphayou/krpc'
 
 // Request/response (accepts optional `{ setupContext }` for per-call context)
 const server = createServer(app)
@@ -46,13 +46,13 @@ const serverPeer = createPeer(serverTransport, app)
 const clientPeer = createPeer<App>(clientTransport)
 ```
 
-## Auto-Batching (`batchTransport` in `krpc`)
+## Auto-Batching (`batchTransport` in `@alphayou/krpc`)
 
 Wrap any `ClientTransport` with `batchTransport` to automatically coalesce concurrent `client.call` and `client.notify` invocations into a single JSON-RPC 2.0 batch array:
 
 ```ts
-import { batchTransport, createClient } from 'krpc'
-import { httpTransport } from 'krpc/http'
+import { batchTransport, createClient } from '@alphayou/krpc'
+import { httpTransport } from '@alphayou/krpc/http'
 
 const client = createClient<App>(
   batchTransport(httpTransport('http://localhost:3000/rpc'), {
@@ -72,15 +72,15 @@ const [a, b] = await Promise.all([
 - **No nested batches**: Explicit `client.batch(...)` arrays pass straight through to the inner transport immediately.
 - **Per-call cancellation**: Aborting an `AbortSignal` before flush removes that call from the queue; aborting after flush rejects only that caller without disrupting sibling calls.
 
-## HTTP (`krpc/http`)
+## HTTP (`@alphayou/krpc/http`)
 
 Built on Web Standard `fetch`, `Request`, and `Response`.
 
 ### Client
 
 ```ts
-import { createClient } from 'krpc'
-import { httpTransport } from 'krpc/http'
+import { createClient } from '@alphayou/krpc'
+import { httpTransport } from '@alphayou/krpc/http'
 
 const client = createClient<App>(
   httpTransport('http://localhost:3000/rpc', {
@@ -101,8 +101,8 @@ const client = createClient<App>(
 `createHttpHandler` returns a standard `(req: Request) => Promise<Response>` function that works directly with `Bun.serve`, Cloudflare Workers, Deno, and Hono:
 
 ```ts
-import { createServer } from 'krpc'
-import { createHttpHandler } from 'krpc/http'
+import { createServer } from '@alphayou/krpc'
+import { createHttpHandler } from '@alphayou/krpc/http'
 
 const server = createServer(app, { maxBatchSize: 50, batchConcurrency: 10 })
 const rpcHandler = createHttpHandler(server, {
@@ -136,15 +136,15 @@ Bun.serve({
 - **Context**: `setupContext(ctx, req)` runs before `onBefore` hooks to attach headers, cookies, or request metadata.
 - **Background tasks (`waitUntil`)**: Pass `waitUntil` (e.g. Cloudflare Workers `executionCtx.waitUntil`) to keep `ctx.after(...)` tasks alive after the `Response` is returned.
 
-## WebSocket (`krpc/ws`)
+## WebSocket (`@alphayou/krpc/ws`)
 
 ### Client: `wsTransport(socket)`
 
 Wraps any Web Standard `WebSocket` (browsers, Bun, Deno, Node 22+):
 
 ```ts
-import { createPeer } from 'krpc'
-import { wsTransport } from 'krpc/ws'
+import { createPeer } from '@alphayou/krpc'
+import { wsTransport } from '@alphayou/krpc/ws'
 
 const peer = createPeer<App>(
   wsTransport(new WebSocket('ws://localhost:3000/rpc'))
@@ -167,8 +167,8 @@ off()
 Wires a centralized-callback WebSocket server directly to an `RpcServer` via `server.connect`—managing the `WeakMap`, connection registration, `setupContext`, and `onOpen`/`onClose` lifecycle automatically:
 
 ```ts
-import { createServer } from 'krpc'
-import { createWsHandler } from 'krpc/ws'
+import { createServer } from '@alphayou/krpc'
+import { createWsHandler } from '@alphayou/krpc/ws'
 
 const rpcServer = createServer(app)
 
@@ -195,8 +195,11 @@ Bun.serve<{ clientId?: string }>({
 When you need custom per-socket `createPeer` wiring (for example, server-to-client RPC calls), use `createWsServerTransport(ws)`, which returns `{ transport, handleMessage, handleClose }`:
 
 ```ts
-import { createPeer } from 'krpc'
-import { createWsServerTransport, type WsServerTransportBridge } from 'krpc/ws'
+import { createPeer } from '@alphayou/krpc'
+import {
+  createWsServerTransport,
+  type WsServerTransportBridge,
+} from '@alphayou/krpc/ws'
 
 const bridges = new WeakMap<object, WsServerTransportBridge>()
 
@@ -222,13 +225,13 @@ Bun.serve({
 })
 ```
 
-## Unified Bun Server (`krpc/bun`)
+## Unified Bun Server (`@alphayou/krpc/bun`)
 
 `createBunHandler(server, options?)` combines `createHttpHandler` and `createWsHandler` into a single `{ fetch, websocket }` object backed by one `RpcServer`. It uses pure structural TypeScript types with zero Bun-only runtime imports.
 
 ```ts
-import { createServer } from 'krpc'
-import { createBunHandler } from 'krpc/bun'
+import { createServer } from '@alphayou/krpc'
+import { createBunHandler } from '@alphayou/krpc/bun'
 
 const server = createServer(app)
 
@@ -263,13 +266,13 @@ Bun.serve({
 - All other matching requests delegate to `createHttpHandler` (supporting `maxBodySize` and `waitUntil`).
 - HTTP handlers can push targeted notifications directly to connected WebSocket clients via `ctx.notify(def, payload, targetId)` or `server.notify(targetId, ...)`.
 
-## Web Streams (`krpc/stream`)
+## Web Streams (`@alphayou/krpc/stream`)
 
 `streamTransport({ readable, writable, framing?, maxMessageSize? })` creates a `DuplexTransport` over any Web Standard `ReadableStream<Uint8Array>` and `WritableStream<Uint8Array>` pair (stdio, pipes, IPC, Web Workers).
 
 ```ts
-import { createPeer } from 'krpc'
-import { streamTransport } from 'krpc/stream'
+import { createPeer } from '@alphayou/krpc'
+import { streamTransport } from '@alphayou/krpc/stream'
 
 const transport = streamTransport({
   readable,
@@ -286,9 +289,9 @@ const peer = createPeer(transport, app)
 - **`ndjson`** (default): One UTF-8 JSON message per `\n`-terminated line. Simple and human-readable for CLIs and pipes.
 - **`content-length`**: LSP-style `Content-Length: <bytes>\r\n\r\n<utf8-json>` framing using exact UTF-8 byte counts (`TextEncoder` / `TextDecoder`). Safely handles fragmented chunks, coalesced frames, and multi-byte UTF-8 characters split across chunks.
 
-Both modes enforce `maxMessageSize` to guard against unbounded buffers. Low-level framing helpers (`encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder`) are also exported from `krpc/stream` for custom byte-stream integrations.
+Both modes enforce `maxMessageSize` to guard against unbounded buffers. Low-level framing helpers (`encodeNdjsonFrame`, `createNdjsonDecoder`, `encodeContentLengthFrame`, `createContentLengthDecoder`) are also exported from `@alphayou/krpc/stream` for custom byte-stream integrations.
 
-## Stdio & Subprocesses (`krpc/stdio`)
+## Stdio & Subprocesses (`@alphayou/krpc/stdio`)
 
 `stdioTransport(options?)` adapts standard I/O or child-process pipes into a framed `DuplexTransport` using pure structural types (zero `node:*` or `bun` runtime imports). It accepts both Web Standard streams (`ReadableStream` / `WritableStream`) and Node / Bun stream handles (`process.stdin`, `process.stdout`, `Bun.spawn` pipes).
 
@@ -297,8 +300,8 @@ Both modes enforce `maxMessageSize` to guard against unbounded buffers. Low-leve
 With no arguments, `stdioTransport()` binds to `process.stdin` and `process.stdout` using `'ndjson'` framing (or pass `{ framing: 'content-length' }` for LSP-style framing):
 
 ```ts
-import { createPeer } from 'krpc'
-import { stdioTransport } from 'krpc/stdio'
+import { createPeer } from '@alphayou/krpc'
+import { stdioTransport } from '@alphayou/krpc/stdio'
 import { app } from './app'
 
 // Serves JSON-RPC over stdin/stdout; exits cleanly when stdin reaches EOF
@@ -310,8 +313,8 @@ const peer = createPeer(stdioTransport(), app)
 Connect a parent process to a spawned worker over OS pipes:
 
 ```ts
-import { createPeer } from 'krpc'
-import { stdioTransport } from 'krpc/stdio'
+import { createPeer } from '@alphayou/krpc'
+import { stdioTransport } from '@alphayou/krpc/stdio'
 import type { App } from './app'
 
 const proc = Bun.spawn([process.execPath, './worker.ts'], {
@@ -333,17 +336,17 @@ await peer.close() // closes proc.stdin so the child receives EOF and exits clea
 await proc.exited
 ```
 
-- **Framing**: Supports `'ndjson'` (default) and `'content-length'`, plus `maxMessageSize` (default: 16 MiB), sharing the exact same framing codec as `krpc/stream`.
+- **Framing**: Supports `'ndjson'` (default) and `'content-length'`, plus `maxMessageSize` (default: 16 MiB), sharing the exact same framing codec as `@alphayou/krpc/stream`.
 - **Backpressure & flushing**: Respects Node `Writable` backpressure (`write() === false` -> `once('drain')`) and calls `flush?.()` for Bun `FileSink` handles automatically.
 - **Clean shutdown (`closeStreams`)**: Defaults to `true` for explicitly provided streams (cancelling readers / ending sinks) and `false` for global `process.stdin` / `process.stdout` (detaching listeners and calling `process.stdin.pause()` so CLI processes exit without hanging).
 
-## MessagePort & Web Workers (`krpc/port`)
+## MessagePort & Web Workers (`@alphayou/krpc/port`)
 
 `portTransport(port)` adapts any Web Standard `MessagePort`, `Worker`, or `DedicatedWorkerGlobalScope` into a `DuplexTransport`:
 
 ```ts
-import { createPeer } from 'krpc'
-import { portTransport } from 'krpc/port'
+import { createPeer } from '@alphayou/krpc'
+import { portTransport } from '@alphayou/krpc/port'
 
 // Example with MessageChannel (same API works with new Worker(...) or self)
 const { port1, port2 } = new MessageChannel()
@@ -377,7 +380,7 @@ export type ClientTransport = (
 Example—wrapping any `ClientTransport` with latency logging:
 
 ```ts
-import type { ClientTransport } from 'krpc'
+import type { ClientTransport } from '@alphayou/krpc'
 
 export function withLogging(inner: ClientTransport): ClientTransport {
   return async (payload, options) => {
@@ -408,7 +411,7 @@ export interface DuplexTransport {
 Example—a `BroadcastChannel` transport for cross-tab messaging:
 
 ```ts
-import type { DuplexTransport } from 'krpc'
+import type { DuplexTransport } from '@alphayou/krpc'
 
 export function broadcastChannelTransport(
   channel: BroadcastChannel
